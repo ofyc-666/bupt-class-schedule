@@ -1,0 +1,270 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_dialog_bottom"
+    android:orientation="vertical"
+    android:paddingStart="20dp"
+    android:paddingTop="12dp"
+    android:paddingEnd="20dp"
+    android:paddingBottom="24dp">
+
+    <!-- Drag Handle -->
+    <View
+        android:layout_width="36dp"
+        android:layout_height="4dp"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginBottom="14dp"
+        android:background="@drawable/bg_drag_handle" />
+
+    <!-- Top Header: Tag Badge + Close Button -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="10dp">
+
+        <TextView
+            android:id="@+id/assignment_detail_badge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentStart="true"
+            android:layout_centerVertical="true"
+            android:background="@drawable/bg_course_detail_badge"
+            android:fontFamily="sans-serif-medium"
+            android:paddingStart="10dp"
+            android:paddingTop="4dp"
+            android:paddingEnd="10dp"
+            android:paddingBottom="4dp"
+            android:text="&#x4f5c;&#x4e1a;&#x8be6;&#x60c5;"
+            android:textColor="#BD5267"
+            android:textSize="12sp" />
+
+        <ImageButton
+            android:id="@+id/assignment_detail_close"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="close"
+            android:padding="6dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_close" />
+    </RelativeLayout>
+
+    <!-- Assignment Title -->
+    <TextView
+        android:id="@+id/assignment_detail_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="14dp"
+        android:fontFamily="sans-serif-medium"
+        android:lineSpacingExtra="3dp"
+        android:text="&#x4f5c;&#x4e1a;&#x6807;&#x9898;"
+        android:textColor="#1E2941"
+        android:textSize="18sp" />
+
+    <!-- Info Box Container -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_course_detail_card"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- Item 1: Course Name -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="72dp"
+                android:layout_height="wrap_content"
+                android:text="&#x6240;&#x5c5e;&#x8bfe;&#x7a0b;"
+                android:textColor="#8F9BB3"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/assignment_detail_course"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:fontFamily="sans-serif-medium"
+                android:text="-"
+                android:textColor="#222B45"
+                android:textSize="14sp" />
+        </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="11dp"
+            android:layout_marginBottom="11dp"
+            android:background="#EDF1F7" />
+
+        <!-- Item 2: Deadline -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="72dp"
+                android:layout_height="wrap_content"
+                android:text="&#x622a;&#x6b62;&#x65f6;&#x95f4;"
+                android:textColor="#8F9BB3"
+                android:textSize="13sp" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <ImageView
+                    android:layout_width="14dp"
+                    android:layout_height="14dp"
+                    android:src="@drawable/ic_clock" />
+
+                <TextView
+                    android:id="@+id/assignment_detail_deadline"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="5dp"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="-"
+                    android:textColor="#BD5267"
+                    android:textSize="14sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="11dp"
+            android:layout_marginBottom="11dp"
+            android:background="#EDF1F7" />
+
+        <!-- Item 3: Status & Remaining -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="72dp"
+                android:layout_height="wrap_content"
+                android:text="&#x63d0;&#x4ea4;&#x72b6;&#x6001;"
+                android:textColor="#8F9BB3"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/assignment_detail_status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="sans-serif-medium"
+                android:text="-"
+                android:textColor="#222B45"
+                android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/assignment_detail_remaining"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="-"
+                android:textColor="#8F9BB3"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <!-- Optional Item 4: Score (if graded) -->
+        <LinearLayout
+            android:id="@+id/assignment_detail_score_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginTop="11dp"
+                android:layout_marginBottom="11dp"
+                android:background="#EDF1F7" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="72dp"
+                    android:layout_height="wrap_content"
+                    android:text="&#x6210;&#x7ee9;&#x8bc4;&#x4ef7;"
+                    android:textColor="#8F9BB3"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/assignment_detail_score"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="-"
+                    android:textColor="#6172D5"
+                    android:textSize="14sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="11dp"
+            android:layout_marginBottom="11dp"
+            android:background="#EDF1F7" />
+
+        <!-- Item 5: Description -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="top"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="72dp"
+                android:layout_height="wrap_content"
+                android:text="&#x4f5c;&#x4e1a;&#x8bf4;&#x660e;"
+                android:textColor="#8F9BB3"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/assignment_detail_description"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:lineSpacingExtra="2dp"
+                android:text="-"
+                android:textColor="#4A5568"
+                android:textSize="13sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Confirm Button -->
+    <Button
+        android:id="@+id/assignment_detail_confirm_button"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:layout_marginTop="18dp"
+        android:background="@drawable/bg_course_detail_button"
+        android:fontFamily="sans-serif-medium"
+        android:stateListAnimator="@null"
+        android:text="&#x77e5;&#x9053;&#x4e86;"
+        android:textColor="#FFFFFF"
+        android:textSize="15sp" />
+</LinearLayout>

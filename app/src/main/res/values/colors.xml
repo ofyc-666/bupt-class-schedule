@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="schedule_background">#F5F7FB</color>
+    <color name="schedule_surface">#FFFFFF</color>
+</resources>
