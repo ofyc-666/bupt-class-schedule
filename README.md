@@ -8,7 +8,7 @@
 
 ## 下载与安装
 
-[下载 v1.0.1 正式版 APK](https://github.com/ofyc-666/bupt-class-schedule/releases/download/v1.0.1/BUPT-Class-Schedule-v1.0.1.apk) · [查看版本记录](https://github.com/ofyc-666/bupt-class-schedule/releases)
+[下载 v1.0.2 正式版 APK](https://github.com/ofyc-666/bupt-class-schedule/releases/download/v1.0.2/BUPT-Class-Schedule-v1.0.2.apk) · [查看版本记录](https://github.com/ofyc-666/bupt-class-schedule/releases)
 
 下载 APK 后在 Android 手机上安装。已有正式版可以直接更新安装，保留本机账号和缓存。
 

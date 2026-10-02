@@ -12,6 +12,8 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.Window
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
@@ -142,8 +144,9 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        configureSystemBars()
         setContentView(R.layout.activity_main)
+        configureSystemBars()
+        configureContentInsets()
         bindViews()
 
         credentialStore = SecureCredentialStore(applicationContext)
@@ -725,11 +728,42 @@ class MainActivity : Activity() {
     private fun configureSystemBars() {
         window.statusBarColor = getColor(R.color.schedule_surface)
         window.navigationBarColor = getColor(R.color.schedule_background)
-        var flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            flags = flags or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+            val lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            window.insetsController?.setSystemBarsAppearance(lightBars, lightBars)
+        } else {
+            var flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                flags = flags or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            }
+            window.decorView.systemUiVisibility = flags
         }
-        window.decorView.systemUiVisibility = flags
+    }
+
+    private fun configureContentInsets() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        val root = findViewById<View>(R.id.app_root)
+        val initialLeft = root.paddingLeft
+        val initialTop = root.paddingTop
+        val initialRight = root.paddingRight
+        val initialBottom = root.paddingBottom
+        root.setOnApplyWindowInsetsListener { view, insets ->
+            // Apply the union once at the root, including the keyboard on login.
+            val safeArea = insets.getInsets(
+                WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or
+                    WindowInsets.Type.ime(),
+            )
+            view.setPadding(
+                initialLeft + safeArea.left,
+                initialTop + safeArea.top,
+                initialRight + safeArea.right,
+                initialBottom + safeArea.bottom,
+            )
+            WindowInsets.CONSUMED
+        }
+        root.requestApplyInsets()
     }
 
     private fun scheduleRevertRefreshStatus(delayMs: Long) {
