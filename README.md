@@ -6,6 +6,8 @@
 
 支持 Android 6.0 及以上。本项目为个人开发的非官方应用。
 
+（⚠️ 提示：目前仅支持本科生教务）
+
 ## 下载与安装
 
 [下载 v1.0.2 正式版 APK](https://github.com/ofyc-666/bupt-class-schedule/releases/download/v1.0.2/BUPT-Class-Schedule-v1.0.2.apk) · [查看版本记录](https://github.com/ofyc-666/bupt-class-schedule/releases)
