@@ -408,6 +408,33 @@
                             android:textColor="#1E2941"
                             android:textSize="20sp" />
 
+                        <LinearLayout
+                            android:id="@+id/assignment_add_custom"
+                            android:layout_width="wrap_content"
+                            android:layout_height="28dp"
+                            android:background="@drawable/bg_custom_assignment_btn"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:orientation="horizontal"
+                            android:paddingStart="8dp"
+                            android:paddingEnd="10dp">
+
+                            <ImageView
+                                android:layout_width="11dp"
+                                android:layout_height="11dp"
+                                android:contentDescription="@null"
+                                android:src="@drawable/ic_plus" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="3.5dp"
+                                android:fontFamily="sans-serif-medium"
+                                android:text="@string/custom_assignment_add"
+                                android:textColor="#5665A5"
+                                android:textSize="11sp" />
+                        </LinearLayout>
                     </LinearLayout>
 
                     <!-- Sync Status Weak Hint Row -->

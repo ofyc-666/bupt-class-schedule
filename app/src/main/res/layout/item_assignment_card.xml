@@ -11,45 +11,27 @@
     android:padding="16dp">
 
     <!-- Header Row: Course Tag + Status Badge -->
-    <RelativeLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content">
-
-        <TextView
-            android:id="@+id/card_course_name"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_alignParentStart="true"
-            android:layout_centerVertical="true"
-            android:background="@drawable/bg_week_badge"
-            android:ellipsize="end"
-            android:fontFamily="sans-serif-medium"
-            android:maxWidth="220dp"
-            android:paddingStart="9dp"
-            android:paddingTop="3dp"
-            android:paddingEnd="9dp"
-            android:paddingBottom="3dp"
-            android:singleLine="true"
-            android:text="&#x8bfe;&#x7a0b;&#x540d;&#x79f0;"
-            android:textColor="#554A86"
-            android:textSize="11.5sp" />
-
-        <TextView
-            android:id="@+id/card_status_badge"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_alignParentEnd="true"
-            android:layout_centerVertical="true"
-            android:background="@drawable/bg_tag_pending"
-            android:fontFamily="sans-serif-medium"
-            android:paddingStart="8dp"
-            android:paddingTop="3dp"
-            android:paddingEnd="8dp"
-            android:paddingBottom="3dp"
-            android:text="&#x5f85;&#x63d0;&#x4ea4;"
-            android:textColor="#BD5267"
-            android:textSize="11.5sp" />
-    </RelativeLayout>
+    <LinearLayout
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center_vertical">
+        <FrameLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1">
+        <TextView android:id="@+id/card_course_name"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:background="@drawable/bg_week_badge" android:ellipsize="end" android:singleLine="true"
+            android:fontFamily="sans-serif-medium" android:paddingStart="9dp" android:paddingEnd="9dp"
+            android:paddingTop="3dp" android:paddingBottom="3dp" android:textColor="#554A86" android:textSize="11.5sp" />
+        </FrameLayout>
+        <TextView android:id="@+id/card_custom_badge"
+            android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="8dp"
+            android:background="@drawable/bg_tag_custom" android:text="@string/custom_assignment_tag" android:textColor="#6574C8"
+            android:paddingStart="8dp" android:paddingEnd="8dp" android:paddingTop="3dp" android:paddingBottom="3dp"
+            android:textSize="11.5sp" android:fontFamily="sans-serif-medium" android:visibility="gone" />
+        <TextView android:id="@+id/card_status_badge"
+            android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="6dp"
+            android:background="@drawable/bg_tag_pending" android:textColor="#BD5267"
+            android:paddingStart="8dp" android:paddingEnd="8dp" android:paddingTop="3dp" android:paddingBottom="3dp"
+            android:textSize="11.5sp" android:fontFamily="sans-serif-medium" />
+    </LinearLayout>
 
     <!-- Assignment Title -->
     <TextView

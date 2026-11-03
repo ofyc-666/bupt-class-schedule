@@ -10,6 +10,7 @@ import com.bupt.schedule.ui.model.CourseTone
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileNotFoundException
 import java.io.OutputStreamWriter
 import java.nio.charset.StandardCharsets
 import java.util.Calendar
@@ -85,7 +86,7 @@ object AssignmentJsonCodec {
             val obj = array.getJSONObject(i)
             val rawDeadline = obj.optString("raw_deadline").takeIf { it.isNotEmpty() }
             val taskType = runCatching { TaskType.valueOf(obj.optString("task_type", "ASSIGNMENT")) }
-                .getOrDefault(TaskType.ASSIGNMENT)
+                .getOrNull() ?: continue
             var status = runCatching { AssignmentStatus.valueOf(obj.optString("status")) }
                 .getOrDefault(AssignmentStatus.PENDING)
             var deadlineText = obj.getString("deadline_text")
@@ -95,8 +96,7 @@ object AssignmentJsonCodec {
             if (!rawDeadline.isNullOrBlank()) {
                 val deadlineCal = UCloudAssignmentParser.parseDeadlineDate(rawDeadline)
                 if (deadlineCal != null) {
-                    val isOverdue = if (taskType == TaskType.QUIZ) deadlineCal.timeInMillis < nowCalendar.timeInMillis
-                        else deadlineCal.timeInMillis <= nowCalendar.timeInMillis
+                    val isOverdue = taskType.isOverdue(deadlineCal.timeInMillis, nowCalendar.timeInMillis)
                     status = if (isOverdue) AssignmentStatus.OVERDUE else AssignmentStatus.PENDING
                     deadlineText = UCloudAssignmentParser.formatDeadlineText(deadlineCal, nowCalendar)
                     deadlineTimeShort = UCloudAssignmentParser.formatTimeShort(deadlineCal)
@@ -135,13 +135,16 @@ object AssignmentJsonCodec {
 
 open class AssignmentStore {
     private val file: AtomicFile?
+    private val legacyFile: AtomicFile?
 
     constructor(context: Context) {
         file = AtomicFile(File(context.filesDir, FILE_NAME))
+        legacyFile = AtomicFile(File(context.filesDir, LEGACY_FILE_NAME))
     }
 
     constructor() {
         file = null
+        legacyFile = null
     }
 
     open fun load(nowCalendar: Calendar = Calendar.getInstance(UCloudAssignmentParser.SHANGHAI)): List<Assignment> =
@@ -155,29 +158,39 @@ open class AssignmentStore {
     ): List<Assignment> {
         if (account.isNullOrBlank()) return emptyList()
         val f = file ?: return emptyList()
-        if (!f.baseFile.exists()) return emptyList()
-        return runCatching {
-            val content = f.openRead().bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-            if (content.isBlank()) emptyList() else AssignmentJsonCodec.decode(content, account, nowCalendar)
-        }.getOrElse { emptyList() }
+        return synchronized(fileLock) {
+            runCatching {
+                val content = try {
+                    f.openRead().bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
+                } catch (_: FileNotFoundException) {
+                    legacyFile?.openRead()?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() }.orEmpty()
+                }
+                if (content.isBlank()) emptyList() else AssignmentJsonCodec.decode(content, account, nowCalendar)
+            }.getOrElse { emptyList() }
+        }
     }
 
     open fun save(account: String, assignments: List<Assignment>) {
         val f = file ?: return
-        val output = f.startWrite()
-        try {
-            val writer = OutputStreamWriter(output, StandardCharsets.UTF_8)
-            writer.write(AssignmentJsonCodec.encode(account, assignments))
-            writer.flush()
-            f.finishWrite(output)
-        } catch (error: Exception) {
-            f.failWrite(output)
-            throw error
+        synchronized(fileLock) {
+            val output = f.startWrite()
+            try {
+                val writer = OutputStreamWriter(output, StandardCharsets.UTF_8)
+                writer.write(AssignmentJsonCodec.encode(account, assignments))
+                writer.flush()
+                f.finishWrite(output)
+            } catch (error: Exception) {
+                f.failWrite(output)
+                throw error
+            }
         }
     }
 
     open fun clear() {
-        file?.let { runCatching { it.delete() } }
+        synchronized(fileLock) {
+            file?.let { runCatching { it.delete() } }
+            legacyFile?.let { runCatching { it.delete() } }
+        }
     }
 
     open fun clear(account: String) {
@@ -189,6 +202,8 @@ open class AssignmentStore {
     }
 
     private companion object {
-        const val FILE_NAME = "assignments.json"
+        const val FILE_NAME = "assignments-v2.json"
+        const val LEGACY_FILE_NAME = "assignments.json"
+        val fileLock = Any()
     }
 }

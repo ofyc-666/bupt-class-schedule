@@ -6,49 +6,63 @@ import com.bupt.schedule.data.remote.UCloudAssignmentParser
 import com.bupt.schedule.data.remote.UCloudSession
 import com.bupt.schedule.domain.model.Assignment
 import com.bupt.schedule.domain.model.Credentials
-import com.bupt.schedule.domain.model.TaskType
+import com.bupt.schedule.domain.model.ScheduleException
+import com.bupt.schedule.domain.repository.AssignmentRefreshResult
 import com.bupt.schedule.domain.repository.AssignmentRepository
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicReference
 
 class DefaultAssignmentRepository(
     private val client: UCloudAssignmentClient = UCloudAssignmentClient(),
     private val store: AssignmentStore,
 ) : AssignmentRepository {
 
-    private val cachedSession = AtomicReference<UCloudSession?>()
-    private val detailCache = ConcurrentHashMap<String, String>()
+    private val stateLock = Any()
+    private var generation = 0L
+    private var refreshingThread: Thread? = null
+    private var sessionAccount: String? = null
+    private var cachedSession: UCloudSession? = null
+    private val detailCache = mutableMapOf<String, String>()
 
     override fun loadCached(account: String?): List<Assignment> {
         if (account.isNullOrBlank()) return emptyList()
         return store.load(account)
     }
 
-    override fun refresh(credentials: Credentials, termStartDate: String?): List<Assignment> {
+    override fun refreshWithCoverage(credentials: Credentials, termStartDate: String?): AssignmentRefreshResult {
         val account = credentials.account.trim()
         if (credentials.teachingCloudPassword.isNullOrEmpty()) {
-            return store.load(account)
+            return AssignmentRefreshResult(store.load(account), complete = true)
         }
 
-        val session = client.login(credentials)
-        cachedSession.set(session)
-        val syncResult = client.fetchAll(session, termStartDate)
-
-        val mergedAssignments = if (syncResult.allCoursesSucceeded) {
-            syncResult.assignments
-        } else {
-            val oldCached = store.load(credentials.account)
-            val keptFromOld = oldCached.filter { oldItem ->
-                val siteId = oldItem.courseId
-                val successfulSourceSites = if (oldItem.taskType == TaskType.QUIZ)
-                    syncResult.successfulQuizSiteIds else syncResult.successfulAssignmentSiteIds
-                siteId == null || siteId !in successfulSourceSites
+        val refreshGeneration = synchronized(stateLock) {
+            check(refreshingThread == null) { "教学云任务正在刷新。" }
+            selectAccount(account)
+            refreshingThread = Thread.currentThread()
+            ++generation
+        }
+        try {
+            val session = client.login(credentials)
+            synchronized(stateLock) {
+                checkActive(refreshGeneration)
+                cachedSession = session
             }
-            UCloudAssignmentParser.mergeAndSort(syncResult.assignments + keptFromOld)
-        }
+            val syncResult = client.fetchAll(session, termStartDate)
 
-        store.save(credentials.account, mergedAssignments)
-        return mergedAssignments
+            return synchronized(stateLock) {
+                checkActive(refreshGeneration)
+                val merged = if (syncResult.allCoursesSucceeded) {
+                    syncResult.assignments
+                } else {
+                    val keptFromOld = store.load(account).filter { old ->
+                        old.courseId !in syncResult.successfulSites(old.taskType)
+                    }
+                    UCloudAssignmentParser.mergeAndSort(syncResult.assignments + keptFromOld)
+                }
+                store.save(account, merged)
+                AssignmentRefreshResult(merged, syncResult.allCoursesSucceeded)
+            }
+        } finally {
+            synchronized(stateLock) { refreshingThread = null }
+        }
     }
 
     override fun verifyCredentials(credentials: Credentials) {
@@ -57,34 +71,56 @@ class DefaultAssignmentRepository(
     }
 
     override fun clearSession() {
-        cachedSession.set(null)
-        detailCache.clear()
+        synchronized(stateLock) {
+            selectAccount(null)
+            refreshingThread?.interrupt()
+        }
+    }
+
+    private fun selectAccount(account: String?) {
+        if (account == null || account != sessionAccount) {
+            generation++
+            sessionAccount = account
+            cachedSession = null
+            detailCache.clear()
+        }
+    }
+
+    private fun checkActive(expectedGeneration: Long) {
+        if (generation != expectedGeneration || Thread.currentThread().isInterrupted) throw InterruptedException()
     }
 
     override fun fetchDetail(assignmentId: String, credentialsProvider: () -> Credentials?): String? {
-        val cached = detailCache[assignmentId]
-        if (cached != null) return cached
-
-        val session = cachedSession.get() ?: run {
-            val creds = credentialsProvider() ?: return null
-            if (creds.teachingCloudPassword.isNullOrEmpty()) return null
-            val newSession = client.login(creds)
-            cachedSession.set(newSession)
-            newSession
+        val credentials = credentialsProvider() ?: return null
+        if (credentials.teachingCloudPassword.isNullOrEmpty()) return null
+        val (detailGeneration, session) = synchronized(stateLock) {
+            selectAccount(credentials.account.trim())
+            detailCache[assignmentId]?.let { return it }
+            generation to cachedSession
         }
-
-        return runCatching {
-            val content = client.fetchDetail(session, assignmentId)
-            detailCache[assignmentId] = content
+        fun login(): UCloudSession {
+            synchronized(stateLock) { checkActive(detailGeneration) }
+            val fresh = client.login(credentials)
+            synchronized(stateLock) {
+                checkActive(detailGeneration)
+                cachedSession = fresh
+            }
+            return fresh
+        }
+        return try {
+            val content = try {
+                client.fetchDetail(session ?: login(), assignmentId)
+            } catch (error: ScheduleException) {
+                if (session == null || error.statusCode != 401) throw error
+                client.fetchDetail(login(), assignmentId)
+            }
+            synchronized(stateLock) {
+                checkActive(detailGeneration)
+                detailCache[assignmentId] = content
+            }
             content
-        }.recoverCatching {
-            val creds = credentialsProvider() ?: return@recoverCatching null
-            if (creds.teachingCloudPassword.isNullOrEmpty()) return@recoverCatching null
-            val freshSession = client.login(creds)
-            cachedSession.set(freshSession)
-            val content = client.fetchDetail(freshSession, assignmentId)
-            detailCache[assignmentId] = content
-            content
-        }.getOrNull()
+        } catch (_: Exception) {
+            null
+        }
     }
 }

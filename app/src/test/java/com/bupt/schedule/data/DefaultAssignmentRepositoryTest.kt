@@ -16,8 +16,80 @@ import org.junit.Assert.fail
 import org.junit.Test
 import java.io.IOException
 import java.util.Calendar
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit.SECONDS
 
 class DefaultAssignmentRepositoryTest {
+
+    @Test
+    fun clearingSessionPreventsAnInFlightRefreshFromWritingOldAccountData() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val old = createAssignment("old", "site", "课程")
+        val store = FakeAssignmentStore(listOf(old))
+        val client = object : UCloudAssignmentClient() {
+            override fun login(credentials: Credentials) = UCloudSession("token", "user")
+            override fun fetchAll(session: UCloudSession, termStartDate: String?, nowCalendar: Calendar): UCloudSyncResult {
+                entered.countDown()
+                check(release.await(5, SECONDS))
+                return UCloudSyncResult(emptyList(), emptySet(), emptySet(), true)
+            }
+        }
+        val repository = DefaultAssignmentRepository(client, store)
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            val result = worker.submit<Throwable?> {
+                runCatching { repository.refresh(Credentials("old-account", "password", "cloud"), null) }
+                    .exceptionOrNull()
+            }
+            assertTrue(entered.await(5, SECONDS))
+            repository.clearSession()
+            release.countDown()
+            assertTrue(result.get(5, SECONDS) is InterruptedException)
+            assertEquals(listOf(old), store.inMemoryAssignments)
+        } finally {
+            release.countDown()
+            worker.shutdownNow()
+        }
+    }
+
+    @Test
+    fun cloudSuccessPartialFailureNoPasswordAndSessionClearNeverChangeLocalTasks() {
+        val files = mutableMapOf<String, String>()
+        val localStore = com.bupt.schedule.data.local.CustomAssignmentStore(object : com.bupt.schedule.data.local.CustomAssignmentStore.Storage {
+            override fun read(ownerHash: String) = files[ownerHash]
+            override fun write(ownerHash: String, value: String) { files[ownerHash] = value }
+        })
+        val local = com.bupt.schedule.domain.model.CustomAssignment(title = "Local", courseName = "Course", deadlineMillis = 1791734340000)
+        localStore.upsert("demo_account_1", local)
+        val originalBytes = files.toMap()
+        var mode = "success"
+        val item = createAssignment("cloud", "site_1", "Course")
+        val client = object : UCloudAssignmentClient() {
+            override fun login(credentials: Credentials) = UCloudSession("test-token", "test-user")
+            override fun fetchAll(session: UCloudSession, termStartDate: String?, nowCalendar: Calendar): UCloudSyncResult {
+                if (mode == "failure") throw IOException("test failure")
+                return UCloudSyncResult(listOf(item), setOf("site_1"), if (mode == "partial") setOf("site_2") else emptySet(), mode != "partial")
+            }
+        }
+        val repo = DefaultAssignmentRepository(client, FakeAssignmentStore())
+        val credentials = Credentials("demo_account_1", "test-password", "test-cloud-password")
+        for (next in listOf("success", "partial", "failure")) {
+            mode = next
+            runCatching { repo.refresh(credentials, "2026-09-07") }
+            val merged = com.bupt.schedule.domain.logic.AssignmentPresentation.merge(repo.loadCached(credentials.account),
+                localStore.load(credentials.account), "2026-09-07", UCloudAssignmentParser.parseDeadlineDate("2026-10-01 00:00:00")!!)
+            assertEquals(2, merged.size)
+            assertTrue(merged.any { it.id == local.id && it.isCustom })
+            assertEquals(originalBytes, files)
+        }
+        repo.refresh(credentials.copy(teachingCloudPassword = null), "2026-09-07")
+        repo.clearSession()
+        assertEquals(originalBytes, files)
+        assertEquals(listOf(local), localStore.load(credentials.account))
+        assertTrue(localStore.load("another-demo-account").isEmpty())
+    }
 
     @Test
     fun completedAssignmentDisappearsAfterSuccessfulRefresh() {
@@ -336,6 +408,26 @@ class DefaultAssignmentRepositoryTest {
             fail("Expected login failure")
         } catch (_: IOException) {
             assertEquals(listOf(old), store.inMemoryAssignments)
+        }
+    }
+
+    @Test
+    fun testRefreshFailureDueToNetworkTimeoutPreservesExistingCache() {
+        val oldAssignment = createAssignment("cached-assignment", "site_1", "Old Course")
+        val store = FakeAssignmentStore(listOf(oldAssignment))
+        val client = object : UCloudAssignmentClient() {
+            override fun login(credentials: Credentials): UCloudSession {
+                throw IOException("Connection timed out")
+            }
+        }
+        val credentials = Credentials("demo_account_1", "jw_pwd", "ucloud_pwd")
+        val repo = DefaultAssignmentRepository(client = client, store = store)
+        try {
+            repo.refresh(credentials, "2026-09-01")
+            fail("Expected network IOException")
+        } catch (_: IOException) {
+            assertEquals(listOf(oldAssignment), store.inMemoryAssignments)
+            assertEquals("ucloud_pwd", credentials.teachingCloudPassword)
         }
     }
 }

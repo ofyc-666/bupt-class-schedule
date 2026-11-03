@@ -8,4 +8,22 @@
         <item name="android:navigationBarColor">@color/schedule_background</item>
         <item name="android:windowNoTitle">true</item>
     </style>
+    <style name="CustomFieldLabel">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">12dp</item>
+        <item name="android:layout_marginBottom">8dp</item>
+        <item name="android:textColor">#748197</item>
+        <item name="android:textSize">13sp</item>
+    </style>
+    <style name="CustomTextInput">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:padding">12dp</item>
+        <item name="android:background">@drawable/bg_login_input</item>
+        <item name="android:textColor">#1E2941</item>
+        <item name="android:textColorHint">#8F9BB3</item>
+        <item name="android:textSize">15sp</item>
+    </style>
 </resources>

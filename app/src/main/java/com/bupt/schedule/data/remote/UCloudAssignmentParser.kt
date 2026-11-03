@@ -7,7 +7,6 @@ import com.bupt.schedule.domain.model.TaskType
 import com.bupt.schedule.domain.model.ScheduleException
 import com.bupt.schedule.domain.model.ScheduleFailureKind
 import com.bupt.schedule.ui.model.CourseTone
-import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -24,6 +23,7 @@ data class UCloudAssignmentPage(
     val total: Int,
     val current: Int,
     val pages: Int,
+    val reportedTotal: Int? = null,
 )
 
 data class UCloudSyncResult(
@@ -33,7 +33,14 @@ data class UCloudSyncResult(
     val allCoursesSucceeded: Boolean,
     val successfulAssignmentSiteIds: Set<String> = successfulSiteIds,
     val successfulQuizSiteIds: Set<String> = successfulSiteIds,
-)
+    val successfulSurveySiteIds: Set<String> = emptySet(),
+) {
+    fun successfulSites(type: TaskType): Set<String> = when (type) {
+        TaskType.ASSIGNMENT -> successfulAssignmentSiteIds
+        TaskType.QUIZ -> successfulQuizSiteIds
+        TaskType.SURVEY -> successfulSurveySiteIds
+    }
+}
 
 object UCloudAssignmentParser {
     val SHANGHAI: TimeZone = TimeZone.getTimeZone("Asia/Shanghai")
@@ -86,34 +93,46 @@ object UCloudAssignmentParser {
         return sanitized.take(100)
     }
 
-    fun parseCourseRecords(root: JSONObject): List<UCloudCourseRecord> {
-        val firstData = root.optJSONObject("data") ?: root
-        val secondData = firstData.optJSONObject("data") ?: firstData
-        val records = secondData.optJSONArray("records") ?: JSONArray()
-        val result = mutableListOf<UCloudCourseRecord>()
-        for (i in 0 until records.length()) {
-            val record = records.optJSONObject(i) ?: continue
-            val siteId = firstString(record, "id", "siteId", "courseId") ?: continue
-            val siteName = firstString(record, "siteName", "courseName", "siteTitle", "name") ?: "未命名课程"
-            result.add(UCloudCourseRecord(siteId = siteId, siteName = siteName))
-        }
-        return result
+    fun parseCourseRecords(root: JSONObject): List<UCloudCourseRecord> =
+        parseAssignmentPage(root).records.map(::parseCourseRecord)
+
+    internal fun parseCourseRecord(record: JSONObject): UCloudCourseRecord {
+        val siteId = firstString(record, "id", "siteId", "courseId") ?: invalidPage()
+        val siteName = firstString(record, "siteName", "courseName", "siteTitle", "name") ?: "未命名课程"
+        return UCloudCourseRecord(siteId = siteId, siteName = siteName)
     }
 
-    fun parseAssignmentPage(root: JSONObject): UCloudAssignmentPage {
-        val data = root.optJSONObject("data") ?: root
-        val recordsArray = data.optJSONArray("records") ?: JSONArray()
-        val records = (0 until recordsArray.length()).mapNotNull { recordsArray.optJSONObject(it) }
-        val total = data.optInt("total", records.size)
-        val current = data.optInt("current", 1)
-        val pages = data.optInt("pages", 1)
+    fun parseAssignmentPage(root: JSONObject, requestedPage: Int = 1, pageSize: Int = 100): UCloudAssignmentPage {
+        val outer = root.optJSONObject("data")
+        val data = listOfNotNull(outer?.optJSONObject("data"), outer, root)
+            .firstOrNull { it.has("records") } ?: invalidPage()
+        val recordsArray = data.optJSONArray("records") ?: invalidPage()
+        val records = (0 until recordsArray.length()).map { recordsArray.optJSONObject(it) ?: invalidPage() }
+        val total = if (data.has("total")) data.optInt("total", -1).takeIf { it >= 0 } ?: invalidPage() else null
+        val current = data.optInt("current", if (data.has("current")) -1 else requestedPage)
+        val pages = if (data.has("pages")) {
+            data.optInt("pages", -1)
+        } else {
+            val fallback = if (requestedPage == 1 && records.isNotEmpty()) records.size else pageSize
+            val size = data.optInt("size", fallback).takeIf { it > 0 }
+            when {
+                total == 0 -> 0
+                total != null && size != null -> ((total.toLong() + size - 1) / size).toInt()
+                else -> invalidPage()
+            }
+        }
+        if (current <= 0 || pages < 0 || (pages == 0 && (records.isNotEmpty() || (total ?: 0) > 0))) invalidPage()
         return UCloudAssignmentPage(
             records = records,
-            total = total,
+            total = total ?: records.size,
             current = current,
-            pages = pages,
+            pages = pages.coerceAtLeast(1),
+            reportedTotal = total,
         )
     }
+
+    internal fun invalidPage(): Nothing =
+        throw ScheduleException(ScheduleFailureKind.INVALID_RESPONSE, "教学云分页响应不完整或格式异常。")
 
     fun parseAssignment(
         raw: JSONObject,
@@ -138,9 +157,23 @@ object UCloudAssignmentParser {
         val chapterName = firstString(raw, "chapterName")?.trim()?.takeIf { it.isNotEmpty() }
 
         val endTimeRaw = firstString(raw, "assignmentEndTime", "endTime").orEmpty().trim()
-        val deadlineCal = parseDeadlineDate(endTimeRaw) ?: return null
+        return buildTask(id, title, chapterName, endTimeRaw, siteId, siteName, termStartDate, nowCalendar, TaskType.ASSIGNMENT)
+    }
 
-        val isOverdue = deadlineCal.timeInMillis <= nowCalendar.timeInMillis
+    private fun buildTask(
+        id: String,
+        title: String,
+        chapterName: String?,
+        endTimeRaw: String,
+        siteId: String,
+        siteName: String,
+        termStartDate: String?,
+        nowCalendar: Calendar,
+        taskType: TaskType,
+        description: String = "",
+    ): Assignment? {
+        val deadlineCal = parseDeadlineDate(endTimeRaw) ?: return null
+        val isOverdue = taskType.isOverdue(deadlineCal.timeInMillis, nowCalendar.timeInMillis)
         val status = if (isOverdue) AssignmentStatus.OVERDUE else AssignmentStatus.PENDING
 
         val deadlineTimeShort = formatTimeShort(deadlineCal)
@@ -175,12 +208,13 @@ object UCloudAssignmentParser {
             week = week,
             weekday = weekday,
             deadlineSlot = deadlineSlot,
-            description = "",
+            description = description,
             score = null,
             remainingDaysText = remainingDaysText,
             tone = tone,
             chapterName = chapterName,
             rawDeadline = endTimeRaw,
+            taskType = taskType,
         )
     }
 
@@ -194,19 +228,32 @@ object UCloudAssignmentParser {
         if (raw.optString("statusSelf") != "未提交") return null
         val id = firstString(raw, "id") ?: return null
         val deadline = firstString(raw, "endAt") ?: return null
-        val mapped = JSONObject()
-            .put("id", "QUIZ:$id")
-            .put("assignmentTitle", firstString(raw, "title") ?: "未命名测验")
-            .put("assignmentStatus", 99)
-            .put("assignmentEndTime", deadline)
-        val item = parseAssignment(mapped, siteId, siteName, termStartDate, nowCalendar) ?: return null
-        val deadlineCal = parseDeadlineDate(deadline) ?: return null
-        val overdue = deadlineCal.timeInMillis < nowCalendar.timeInMillis
-        return item.copy(
-            taskType = TaskType.QUIZ,
-            status = if (overdue) AssignmentStatus.OVERDUE else AssignmentStatus.PENDING,
-            remainingDaysText = formatRemainingDaysText(deadlineCal, nowCalendar, overdue),
+        return buildTask(
+            "QUIZ:$id", firstString(raw, "title")?.trim() ?: "未命名测验", null, deadline.trim(),
+            siteId, siteName, termStartDate, nowCalendar, TaskType.QUIZ,
         )
+    }
+
+    fun parseSurvey(
+        raw: JSONObject,
+        siteId: String,
+        siteName: String,
+        termStartDate: String?,
+        nowCalendar: Calendar = Calendar.getInstance(SHANGHAI),
+    ): Assignment {
+        // The student course page renders this endpoint as the list of surveys to participate in.
+        // The separate completed list is never fetched. Deadline only controls the display status.
+        val id = firstString(raw, "id") ?: invalidPage()
+        val deadline = firstString(raw, "endTime")?.trim() ?: invalidPage()
+        val responseSite = firstString(raw, "siteId")
+        if (responseSite != null && responseSite != siteId) invalidPage()
+        val chapter = listOfNotNull(firstString(raw, "partName"), firstString(raw, "nodeName"))
+            .joinToString(" ").ifBlank { null }
+        return buildTask(
+            "SURVEY:$id", firstString(raw, "theme")?.trim() ?: "未命名问卷", chapter, deadline,
+            siteId, siteName, termStartDate, nowCalendar, TaskType.SURVEY,
+            cleanHtml(firstString(raw, "description").orEmpty()),
+        ) ?: invalidPage()
     }
 
     fun parseDeadlineDate(value: String): Calendar? {
@@ -283,57 +330,12 @@ object UCloudAssignmentParser {
     fun formatTimeShort(cal: Calendar): String =
         SimpleDateFormat("HH:mm", Locale.CHINA).apply { timeZone = SHANGHAI }.format(cal.time)
 
-    private fun dayDifference(from: Calendar, to: Calendar): Int {
-        val fromStart = (from.clone() as Calendar).apply {
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }
-        val toStart = (to.clone() as Calendar).apply {
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }
-        return ((toStart.timeInMillis - fromStart.timeInMillis) / 86400000L).toInt()
-    }
-
     fun formatDeadlineText(deadline: Calendar, now: Calendar): String {
-        val timeStr = formatTimeShort(deadline)
-        val isSameYear = deadline.get(Calendar.YEAR) == now.get(Calendar.YEAR)
-        val dayDiff = dayDifference(now, deadline)
-
-        if (isSameYear && dayDiff == 0) {
-            return "\u4eca\u5929 " + timeStr
-        }
-        if (isSameYear && dayDiff == 1) {
-            return "\u660e\u5929 " + timeStr
-        }
-
-        val nowMonday = ScheduleLogic.mondayOfCurrentWeek(now)
-        val deadlineMonday = ScheduleLogic.mondayOfCurrentWeek(deadline)
-        val weekDiff = ((deadlineMonday.timeInMillis - nowMonday.timeInMillis) / (7 * 86400000L)).toInt()
-
-        val weekdayName = when (((deadline.get(Calendar.DAY_OF_WEEK) + 5) % 7) + 1) {
-            1 -> "\u5468\u4e00"
-            2 -> "\u5468\u4e8c"
-            3 -> "\u5468\u4e09"
-            4 -> "\u5468\u56db"
-            5 -> "\u5468\u4e94"
-            6 -> "\u5468\u516d"
-            7 -> "\u5468\u65e5"
-            else -> ""
-        }
-
-        return when {
-            weekDiff == 0 -> weekdayName + " " + timeStr
-            weekDiff == 1 -> "\u4e0b" + weekdayName + " " + timeStr
-            else -> {
-                val dateFormat = SimpleDateFormat("M\u6708d\u65e5", Locale.CHINA).apply { timeZone = SHANGHAI }
-                dateFormat.format(deadline.time) + " " + timeStr
-            }
-        }
+        val deadlineCal = (deadline.clone() as Calendar).apply { timeZone = SHANGHAI }
+        val nowCal = (now.clone() as Calendar).apply { timeZone = SHANGHAI }
+        val isSameYear = deadlineCal.get(Calendar.YEAR) == nowCal.get(Calendar.YEAR)
+        val pattern = if (isSameYear) "M月d日 HH:mm" else "yyyy年M月d日 HH:mm"
+        return SimpleDateFormat(pattern, Locale.CHINA).apply { timeZone = SHANGHAI }.format(deadlineCal.time)
     }
 
     fun formatRemainingDaysText(deadline: Calendar, now: Calendar, isOverdue: Boolean): String {
@@ -363,7 +365,10 @@ object UCloudAssignmentParser {
         }
 
     fun mergeAndSort(items: List<Assignment>, maximumAssignments: Int = 5000): List<Assignment> {
-        val distinct = items.take(maximumAssignments).distinctBy { it.id }
+        val distinct = items.distinctBy { it.sourceKey }
+        if (distinct.size > maximumAssignments) {
+            throw ScheduleException(ScheduleFailureKind.INVALID_RESPONSE, "教学云任务数量超过安全上限。")
+        }
         return distinct.sortedWith(
             compareBy<Assignment>(
                 { if (it.status == AssignmentStatus.PENDING) 0 else 1 },

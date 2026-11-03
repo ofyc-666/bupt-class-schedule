@@ -21,9 +21,11 @@ import android.view.ViewConfiguration
 import android.widget.OverScroller
 import com.bupt.schedule.ui.model.CourseTone
 import com.bupt.schedule.domain.logic.ScheduleLogic
+import com.bupt.schedule.domain.logic.ScheduleHorizontalState
 import com.bupt.schedule.ui.model.ScheduleItem
 import android.text.TextUtils
 import com.bupt.schedule.domain.model.AssignmentStatus
+import com.bupt.schedule.domain.logic.ScheduleDdlLayout
 import com.bupt.schedule.ui.model.ScheduleAssignmentItem
 import kotlin.math.max
 import kotlin.math.min
@@ -49,6 +51,7 @@ class ScheduleView @JvmOverloads constructor(
     private var assignmentModeProgress: Float = 0f
     private var modeAnimator: ValueAnimator? = null
     var onAssignmentClickListener: ((ScheduleAssignmentItem) -> Unit)? = null
+    var onOverflowClickListener: ((List<ScheduleAssignmentItem>) -> Unit)? = null
     private val ribbonBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val ribbonStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -68,6 +71,14 @@ class ScheduleView @JvmOverloads constructor(
     private val ribbonPath = android.graphics.Path()
     private val assignmentTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG)
     private val positionedAssignments = mutableListOf<PositionedAssignment>()
+    private val positionedOverflows = mutableListOf<PositionedOverflow>()
+    private val hitCache = ScheduleDdlLayout.AssignmentHitCache()
+
+    private fun clearPositionedAssignments() {
+        hitCache.clear()
+        positionedAssignments.clear()
+        positionedOverflows.clear()
+    }
 
     private var currentColumnWidth = 0f
     private var horizontalScrollOffset = 0f
@@ -75,6 +86,8 @@ class ScheduleView @JvmOverloads constructor(
     private val scroller = OverScroller(context)
     private var velocityTracker: VelocityTracker? = null
     private var isDragging = false
+    private var isTouching = false
+    private val horizontalState = ScheduleHorizontalState()
     private var lastTouchX = 0f
     private var lastTouchY = 0f
     private var downX = 0f
@@ -96,6 +109,7 @@ class ScheduleView @JvmOverloads constructor(
 
     fun setAssignmentRecords(records: List<ScheduleAssignmentItem>?) {
         assignmentRecords = records?.filter { !it.status.isFinished }.orEmpty()
+        clearPositionedAssignments()
         invalidate()
     }
 
@@ -103,6 +117,9 @@ class ScheduleView @JvmOverloads constructor(
         if (showAssignments != show) {
             showAssignments = show
             val target = if (show) 1f else 0f
+            if (!show && !animate) {
+                clearPositionedAssignments()
+            }
             if (animate && isAttachedToWindow) {
                 modeAnimator?.cancel()
                 modeAnimator = ValueAnimator.ofFloat(assignmentModeProgress, target).apply {
@@ -110,6 +127,9 @@ class ScheduleView @JvmOverloads constructor(
                     interpolator = DecelerateInterpolator()
                     addUpdateListener { anim ->
                         assignmentModeProgress = anim.animatedValue as Float
+                        if (assignmentModeProgress < 0.01f) {
+                            clearPositionedAssignments()
+                        }
                         invalidate()
                     }
                     start()
@@ -117,6 +137,9 @@ class ScheduleView @JvmOverloads constructor(
             } else {
                 modeAnimator?.cancel()
                 assignmentModeProgress = target
+                if (target < 0.01f) {
+                    clearPositionedAssignments()
+                }
                 invalidate()
             }
         }
@@ -128,6 +151,12 @@ class ScheduleView @JvmOverloads constructor(
         require(dateLabels.size == DAY_COUNT)
         dayDates = dateLabels.toTypedArray()
         todayIndex = currentDayIndex.takeIf { it in 0 until DAY_COUNT } ?: -1
+        invalidate()
+    }
+
+    /** Called only on entry/week changes or a changed date, never on task/network refresh. */
+    fun positionForToday(currentDayIndex: Int, resetUser: Boolean = false) {
+        horizontalState.positionForToday(currentDayIndex, resetUser)
         invalidate()
     }
 
@@ -147,6 +176,10 @@ class ScheduleView @JvmOverloads constructor(
         currentColumnWidth = columnWidth
         val totalDaysWidth = columnWidth * DAY_COUNT
         maxScrollOffset = max(0f, totalDaysWidth - (viewWidth - railWidth))
+        horizontalState.consumePosition(isTouching || !scroller.isFinished)?.let { firstDay ->
+            scroller.abortAnimation()
+            horizontalScrollOffset = (firstDay * columnWidth).coerceIn(0f, maxScrollOffset)
+        }
         horizontalScrollOffset = horizontalScrollOffset.coerceIn(0f, maxScrollOffset)
 
         val scrollSave = canvas.save()
@@ -180,6 +213,8 @@ class ScheduleView @JvmOverloads constructor(
             if (assignmentLayer != -1) {
                 canvas.restoreToCount(assignmentLayer)
             }
+        } else {
+            clearPositionedAssignments()
         }
 
         canvas.restoreToCount(scrollSave)
@@ -247,6 +282,7 @@ class ScheduleView @JvmOverloads constructor(
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                isTouching = true
                 if (!scroller.isFinished) {
                     scroller.abortAnimation()
                 }
@@ -264,6 +300,7 @@ class ScheduleView @JvmOverloads constructor(
                 if (!isDragging && maxScrollOffset > 0f) {
                     if (Math.abs(dx) > touchSlop && Math.abs(dx) > Math.abs(dy)) {
                         isDragging = true
+                        horizontalState.onUserDrag()
                         parent?.requestDisallowInterceptTouchEvent(true)
                     }
                 }
@@ -275,6 +312,7 @@ class ScheduleView @JvmOverloads constructor(
                 }
             }
             MotionEvent.ACTION_UP -> {
+                isTouching = false
                 if (isDragging) {
                     velocityTracker?.computeCurrentVelocity(1000, maxFlingVelocity.toFloat())
                     val xVel = velocityTracker?.xVelocity ?: 0f
@@ -298,10 +336,16 @@ class ScheduleView @JvmOverloads constructor(
                             performClick()
                             onAssignmentClickListener?.invoke(hitAssignment)
                         } else {
-                            val hitCourse = findCourseAt(event.x, event.y)
-                            if (hitCourse != null) {
+                            val hitOverflow = findOverflowAt(event.x, event.y)
+                            if (hitOverflow != null) {
                                 performClick()
-                                onCourseClickListener?.invoke(hitCourse.id)
+                                onOverflowClickListener?.invoke(hitOverflow)
+                            } else {
+                                val hitCourse = findCourseAt(event.x, event.y)
+                                if (hitCourse != null) {
+                                    performClick()
+                                    onCourseClickListener?.invoke(hitCourse.id)
+                                }
                             }
                         }
                     }
@@ -309,14 +353,17 @@ class ScheduleView @JvmOverloads constructor(
                 isDragging = false
                 velocityTracker?.recycle()
                 velocityTracker = null
+                invalidate()
             }
             MotionEvent.ACTION_CANCEL -> {
+                isTouching = false
                 if (isDragging) {
                     snapToNearestColumn()
                 }
                 isDragging = false
                 velocityTracker?.recycle()
                 velocityTracker = null
+                invalidate()
             }
         }
         return true
@@ -553,7 +600,9 @@ class ScheduleView @JvmOverloads constructor(
             var componentEnd = -1
 
             fun flushComponent() {
-                if (component.isEmpty()) return
+                if (component.isEmpty()) {
+                    return
+                }
                 val laneEnds = mutableListOf<Int>()
                 val assignments = mutableListOf<Pair<ScheduleItem, Int>>()
                 component.forEach { course ->
@@ -690,15 +739,27 @@ class ScheduleView @JvmOverloads constructor(
     )
 
     fun findAssignmentAt(x: Float, y: Float): ScheduleAssignmentItem? {
-        if (!showAssignments || assignmentModeProgress < 0.3f || positionedAssignments.isEmpty()) return null
         val contentX = x + horizontalScrollOffset
         val contentY = y
-        for (p in positionedAssignments.reversed()) {
-            if (p.rect.contains(contentX, contentY)) {
-                return p.assignment
-            }
-        }
-        return null
+        return hitCache.findAssignmentAt(
+            contentX = contentX,
+            contentY = contentY,
+            showAssignments = showAssignments,
+            modeProgress = assignmentModeProgress,
+            hasRecords = assignmentRecords.isNotEmpty(),
+        )
+    }
+
+    fun findOverflowAt(x: Float, y: Float): List<ScheduleAssignmentItem>? {
+        val contentX = x + horizontalScrollOffset
+        val contentY = y
+        return hitCache.findOverflowAt(
+            contentX = contentX,
+            contentY = contentY,
+            showAssignments = showAssignments,
+            modeProgress = assignmentModeProgress,
+            hasRecords = assignmentRecords.isNotEmpty(),
+        )
     }
 
     private fun drawAssignments(
@@ -708,10 +769,21 @@ class ScheduleView @JvmOverloads constructor(
         rowHeight: Float,
         columnWidth: Float,
     ) {
-        positionedAssignments.clear()
+        clearPositionedAssignments()
         val ribbonHeight = dp(15f)
         val cornerRadius = dp(5f)
         val anchorRadius = dp(1.8f)
+        val bodyBottom = bodyTop + PERIOD_COUNT * rowHeight
+
+        val params = ScheduleDdlLayout.LayoutParams(
+            bodyTop = bodyTop,
+            bodyBottom = bodyBottom,
+            rowHeight = rowHeight,
+            ribbonHeight = ribbonHeight,
+            minGap = dp(4f),
+            margin = dp(2f),
+            touchPadding = dp(4f),
+        )
 
         val grouped = assignmentRecords.groupBy { it.day }
         grouped.forEach { (day, dayAssignments) ->
@@ -719,11 +791,16 @@ class ScheduleView @JvmOverloads constructor(
                 val slotLeft = railWidth + (day - 1) * columnWidth
                 val slotRight = slotLeft + columnWidth
 
-                dayAssignments.forEachIndexed { index, item ->
-                    val slotIndex = item.deadlineSlot.coerceIn(0, PERIOD_COUNT - 1)
-                    val bottomOffset = dp(3.5f) + index * (ribbonHeight + dp(4f))
-                    val lineY = bodyTop + (slotIndex + 1) * rowHeight - bottomOffset - ribbonHeight / 2f
+                val placedItems = ScheduleDdlLayout.layoutDayAssignments(
+                    items = dayAssignments,
+                    params = params,
+                    slotLeft = slotLeft,
+                    slotRight = slotRight,
+                )
 
+                for (placed in placedItems) {
+                    hitCache.add(placed)
+                    val lineY = placed.y
                     val lineStartX = slotLeft + dp(1.2f)
                     val anchorX = slotLeft + dp(3.2f)
                     val tagLeft = slotLeft + dp(6.5f)
@@ -732,71 +809,119 @@ class ScheduleView @JvmOverloads constructor(
                     val tagBottom = lineY + ribbonHeight / 2f
                     val tagCenterY = lineY
 
-                    // Touch hit area (larger for easy clicking, covers full slot width)
-                    val hitRect = RectF(slotLeft, lineY - dp(4f), slotRight, tagBottom + dp(4f))
-                    positionedAssignments.add(PositionedAssignment(item, hitRect))
+                    val hitRectF = RectF(
+                        placed.hitRect.left,
+                        placed.hitRect.top,
+                        placed.hitRect.right,
+                        placed.hitRect.bottom,
+                    )
 
-                    val palette = when (item.status) {
-                        AssignmentStatus.PENDING -> RibbonPalette(
-                            solidColor = Color.rgb(249, 115, 22),
-                            shadowColor = Color.argb(45, 0, 0, 0),
-                            textTypeface = mediumTypeface,
-                            isHighEmphasis = true,
-                        )
-                        AssignmentStatus.SUBMITTED -> RibbonPalette(
-                            solidColor = Color.rgb(16, 185, 129),
-                            shadowColor = Color.argb(30, 0, 0, 0),
-                            textTypeface = regularTypeface,
-                            isHighEmphasis = false,
-                        )
-                        AssignmentStatus.GRADED -> RibbonPalette(
-                            solidColor = Color.rgb(139, 92, 246),
-                            shadowColor = Color.argb(30, 0, 0, 0),
-                            textTypeface = regularTypeface,
-                            isHighEmphasis = false,
-                        )
-                        AssignmentStatus.OVERDUE -> RibbonPalette(
-                            solidColor = Color.rgb(100, 116, 139),
-                            shadowColor = Color.argb(25, 0, 0, 0),
-                            textTypeface = regularTypeface,
-                            isHighEmphasis = false,
-                        )
-                    }
+                    when (placed) {
+                        is ScheduleDdlLayout.PlacedItem.Single -> {
+                            positionedAssignments.add(PositionedAssignment(placed.assignment, hitRectF))
+                            val item = placed.assignment
+                            val palette = when (item.status) {
+                                AssignmentStatus.PENDING -> RibbonPalette(
+                                    solidColor = Color.rgb(249, 115, 22),
+                                    shadowColor = Color.argb(45, 0, 0, 0),
+                                    textTypeface = mediumTypeface,
+                                    isHighEmphasis = true,
+                                )
+                                AssignmentStatus.SUBMITTED -> RibbonPalette(
+                                    solidColor = Color.rgb(16, 185, 129),
+                                    shadowColor = Color.argb(30, 0, 0, 0),
+                                    textTypeface = regularTypeface,
+                                    isHighEmphasis = false,
+                                )
+                                AssignmentStatus.GRADED -> RibbonPalette(
+                                    solidColor = Color.rgb(139, 92, 246),
+                                    shadowColor = Color.argb(30, 0, 0, 0),
+                                    textTypeface = regularTypeface,
+                                    isHighEmphasis = false,
+                                )
+                                AssignmentStatus.OVERDUE -> RibbonPalette(
+                                    solidColor = Color.rgb(100, 116, 139),
+                                    shadowColor = Color.argb(25, 0, 0, 0),
+                                    textTypeface = regularTypeface,
+                                    isHighEmphasis = false,
+                                )
+                            }
 
-                    val shadowRect = RectF(tagLeft, tagTop + dp(0.8f), tagRight, tagBottom + dp(0.8f))
-                    ribbonShadowPaint.color = palette.shadowColor
-                    canvas.drawRoundRect(shadowRect, cornerRadius, cornerRadius, ribbonShadowPaint)
+                            val shadowRect = RectF(tagLeft, tagTop + dp(0.8f), tagRight, tagBottom + dp(0.8f))
+                            ribbonShadowPaint.color = palette.shadowColor
+                            canvas.drawRoundRect(shadowRect, cornerRadius, cornerRadius, ribbonShadowPaint)
 
-                    val tagRect = RectF(tagLeft, tagTop, tagRight, tagBottom)
-                    ribbonBgPaint.color = palette.solidColor
-                    canvas.drawRoundRect(tagRect, cornerRadius, cornerRadius, ribbonBgPaint)
+                            val tagRect = RectF(tagLeft, tagTop, tagRight, tagBottom)
+                            ribbonBgPaint.color = palette.solidColor
+                            canvas.drawRoundRect(tagRect, cornerRadius, cornerRadius, ribbonBgPaint)
 
-                    ribbonTimelinePaint.color = palette.solidColor
-                    ribbonTimelinePaint.strokeWidth = if (palette.isHighEmphasis) dp(1.6f) else dp(1.2f)
-                    canvas.drawLine(lineStartX, lineY, tagLeft, lineY, ribbonTimelinePaint)
+                            ribbonTimelinePaint.color = palette.solidColor
+                            ribbonTimelinePaint.strokeWidth = if (palette.isHighEmphasis) dp(1.6f) else dp(1.2f)
+                            canvas.drawLine(lineStartX, lineY, tagLeft, lineY, ribbonTimelinePaint)
 
-                    ribbonAnchorPaint.color = palette.solidColor
-                    canvas.drawCircle(anchorX, lineY, anchorRadius, ribbonAnchorPaint)
+                            ribbonAnchorPaint.color = palette.solidColor
+                            canvas.drawCircle(anchorX, lineY, anchorRadius, ribbonAnchorPaint)
 
-                    val textLeft = tagLeft + dp(4.0f)
-                    val textRight = tagRight - dp(4.0f)
-                    val availableWidth = textRight - textLeft
+                            val textLeft = tagLeft + dp(4.0f)
+                            val textRight = tagRight - dp(4.0f)
+                            val availableWidth = textRight - textLeft
 
-                    if (availableWidth > dp(10f)) {
-                        assignmentTextPaint.typeface = palette.textTypeface
-                        assignmentTextPaint.textSize = sp(7.8f)
-                        assignmentTextPaint.color = Color.WHITE
+                            if (availableWidth > dp(10f)) {
+                                assignmentTextPaint.typeface = palette.textTypeface
+                                assignmentTextPaint.textSize = sp(7.8f)
+                                assignmentTextPaint.color = Color.WHITE
 
-                        val rawText = item.deadlineTimeShort + " \u00b7 " + item.courseName
-                        val ellipsized = TextUtils.ellipsize(
-                            rawText,
-                            assignmentTextPaint,
-                            availableWidth,
-                            TextUtils.TruncateAt.END,
-                        ).toString()
+                                val rawText = item.deadlineTimeShort + " \u00b7 " + item.courseName
+                                val ellipsized = TextUtils.ellipsize(
+                                    rawText,
+                                    assignmentTextPaint,
+                                    availableWidth,
+                                    TextUtils.TruncateAt.END,
+                                ).toString()
 
-                        val textY = verticallyCenteredBaseline(assignmentTextPaint, tagCenterY)
-                        canvas.drawText(ellipsized, textLeft, textY, assignmentTextPaint)
+                                val textY = verticallyCenteredBaseline(assignmentTextPaint, tagCenterY)
+                                canvas.drawText(ellipsized, textLeft, textY, assignmentTextPaint)
+                            }
+                        }
+                        is ScheduleDdlLayout.PlacedItem.Overflow -> {
+                            positionedOverflows.add(PositionedOverflow(placed.assignments, hitRectF))
+
+                            val shadowRect = RectF(tagLeft, tagTop + dp(0.8f), tagRight, tagBottom + dp(0.8f))
+                            ribbonShadowPaint.color = Color.argb(35, 0, 0, 0)
+                            canvas.drawRoundRect(shadowRect, cornerRadius, cornerRadius, ribbonShadowPaint)
+
+                            val tagRect = RectF(tagLeft, tagTop, tagRight, tagBottom)
+                            ribbonBgPaint.color = Color.rgb(97, 114, 213)
+                            canvas.drawRoundRect(tagRect, cornerRadius, cornerRadius, ribbonBgPaint)
+
+                            ribbonTimelinePaint.color = Color.rgb(97, 114, 213)
+                            ribbonTimelinePaint.strokeWidth = dp(1.4f)
+                            canvas.drawLine(lineStartX, lineY, tagLeft, lineY, ribbonTimelinePaint)
+
+                            ribbonAnchorPaint.color = Color.rgb(97, 114, 213)
+                            canvas.drawCircle(anchorX, lineY, anchorRadius, ribbonAnchorPaint)
+
+                            val textLeft = tagLeft + dp(4.0f)
+                            val textRight = tagRight - dp(4.0f)
+                            val availableWidth = textRight - textLeft
+
+                            if (availableWidth > dp(10f)) {
+                                assignmentTextPaint.typeface = mediumTypeface
+                                assignmentTextPaint.textSize = sp(7.8f)
+                                assignmentTextPaint.color = Color.WHITE
+
+                                val rawText = "\u66f4\u591a ${placed.assignments.size} \u9879"
+                                val ellipsized = TextUtils.ellipsize(
+                                    rawText,
+                                    assignmentTextPaint,
+                                    availableWidth,
+                                    TextUtils.TruncateAt.END,
+                                ).toString()
+
+                                val textY = verticallyCenteredBaseline(assignmentTextPaint, tagCenterY)
+                                canvas.drawText(ellipsized, textLeft, textY, assignmentTextPaint)
+                            }
+                        }
                     }
                 }
             }
@@ -812,6 +937,11 @@ class ScheduleView @JvmOverloads constructor(
 
     private data class PositionedAssignment(
         val assignment: ScheduleAssignmentItem,
+        val rect: RectF,
+    )
+
+    private data class PositionedOverflow(
+        val assignments: List<ScheduleAssignmentItem>,
         val rect: RectF,
     )
 

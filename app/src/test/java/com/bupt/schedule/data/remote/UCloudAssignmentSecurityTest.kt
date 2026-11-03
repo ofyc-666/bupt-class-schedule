@@ -65,6 +65,9 @@ class UCloudAssignmentSecurityTest {
             override fun fetchQuizzesForCourse(session: UCloudSession, course: UCloudCourseRecord,
                 termStartDate: String?, nowCalendar: Calendar): List<Assignment> = emptyList()
 
+            override fun fetchSurveysForCourse(session: UCloudSession, course: UCloudCourseRecord,
+                termStartDate: String?, nowCalendar: Calendar): List<Assignment> = emptyList()
+
             override fun fetchAssignmentsForCourse(
                 session: UCloudSession,
                 course: UCloudCourseRecord,
@@ -103,6 +106,11 @@ class UCloudAssignmentSecurityTest {
             }
 
             override fun fetchQuizzesForCourse(session: UCloudSession, course: UCloudCourseRecord,
+                termStartDate: String?, nowCalendar: Calendar): List<Assignment> {
+                throw IOException("Course failure on siteId: ${course.siteId}")
+            }
+
+            override fun fetchSurveysForCourse(session: UCloudSession, course: UCloudCourseRecord,
                 termStartDate: String?, nowCalendar: Calendar): List<Assignment> {
                 throw IOException("Course failure on siteId: ${course.siteId}")
             }

@@ -12,12 +12,16 @@ android {
         applicationId = "com.bupt.schedule"
         minSdk = 23
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.0.2"
+        versionCode = 4
+        versionName = "1.0.3"
 
     }
 
     buildTypes {
+        getByName("debug") {
+            applicationIdSuffix = ".test"
+            resValue("string", "app_name", "北邮课表（测试版）")
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true

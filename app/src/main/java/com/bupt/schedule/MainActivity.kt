@@ -2,6 +2,10 @@ package com.bupt.schedule
 
 import android.app.Activity
 import android.app.Dialog
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
@@ -45,10 +49,16 @@ import com.bupt.schedule.ui.ToggleSwitch
 import android.graphics.Typeface
 import com.bupt.schedule.data.DefaultAssignmentRepository
 import com.bupt.schedule.data.local.AssignmentStore
+import com.bupt.schedule.data.local.CustomAssignmentStore
+import com.bupt.schedule.domain.model.CustomAssignment
+import com.bupt.schedule.domain.logic.AssignmentPresentation
+import com.bupt.schedule.domain.logic.ScheduleDateState
+import com.bupt.schedule.ui.CustomAssignmentEditor
 import com.bupt.schedule.domain.repository.AssignmentRepository
 import com.bupt.schedule.domain.model.Assignment
 import com.bupt.schedule.domain.model.AssignmentStatus
 import com.bupt.schedule.domain.model.TaskType
+import com.bupt.schedule.domain.model.AssignmentSyncState
 import com.bupt.schedule.ui.model.ScheduleAssignmentItem
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -59,13 +69,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import com.bupt.schedule.data.remote.UCloudAssignmentClient
 
 
-enum class AssignmentSyncState {
-    IDLE,
-    LOADING,
-    SUCCESS,
-    FAILED_WITH_CACHE,
-    FAILED_NO_CACHE,
-}
+
 
 /** Activity 只编排登录/缓存/刷新与普通 View 状态，不包含接口或解析细节。 */
 class MainActivity : Activity() {
@@ -125,6 +129,28 @@ class MainActivity : Activity() {
     private lateinit var assignmentEmptyAction: TextView
     private var assignmentSyncState: AssignmentSyncState = AssignmentSyncState.IDLE
     private var currentAssignments: List<Assignment> = emptyList()
+    private var cloudAssignments: List<Assignment> = emptyList()
+    private var customAssignments: List<CustomAssignment> = emptyList()
+    private var lastRenderedAssignments: List<Assignment>? = null
+    private var refreshVisibleDetail: (() -> Unit)? = null
+    private lateinit var customAssignmentStore: CustomAssignmentStore
+    private val dateState = ScheduleDateState()
+    private var positionedWeekKey: String? = null
+    private var restoredWeek: Int? = null
+    private var restoredTerm: String? = null
+    private var clockReceiverRegistered = false
+    private val clockReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            updateClock(force = true)
+            scheduleClockTick()
+        }
+    }
+    private val clockTick = object : Runnable {
+        override fun run() {
+            updateClock()
+            scheduleClockTick()
+        }
+    }
     private var selectedAssignmentFilter: AssignmentStatus? = null
     private var currentTabIsSchedule: Boolean = true
     private var isAssignmentSwitchOn: Boolean = false
@@ -150,6 +176,10 @@ class MainActivity : Activity() {
         bindViews()
 
         credentialStore = SecureCredentialStore(applicationContext)
+        customAssignmentStore = CustomAssignmentStore(applicationContext)
+        restoredWeek = savedInstanceState?.getInt("selected_week")
+        restoredTerm = savedInstanceState?.getString("selected_term")
+        dateState.followsCurrentWeek = savedInstanceState?.getBoolean("follows_current_week", true) ?: true
         refreshMetadataStore = RefreshMetadataStore(applicationContext)
         repository = DefaultScheduleRepository(
             client = SjdScheduleClient(),
@@ -216,7 +246,7 @@ class MainActivity : Activity() {
         assignmentRefreshIcon = findViewById(R.id.assignment_refresh_icon)
         assignmentCloudStatus = findViewById(R.id.assignment_cloud_status)
         assignmentCloudStatus.setOnClickListener {
-            val isFailed = assignmentSyncState == AssignmentSyncState.FAILED_NO_CACHE || assignmentSyncState == AssignmentSyncState.FAILED_WITH_CACHE
+            val isFailed = AssignmentPresentation.isFailed(assignmentSyncState)
             if (isFailed) {
                 triggerRetryIfFailed()
             }
@@ -225,7 +255,15 @@ class MainActivity : Activity() {
         assignmentUnbindBtn = findViewById(R.id.assignment_unbind_btn)
 
         assignmentRefreshBtn.setOnClickListener { triggerManualAssignmentRefresh() }
-        assignmentReauthBtn.setOnClickListener { showConfigureUCloudDialog(PendingUCloudAction.MANUAL_REFRESH) }
+        findViewById<View>(R.id.assignment_add_custom).setOnClickListener { showCustomAssignmentEditor() }
+        assignmentReauthBtn.setOnClickListener {
+            val configured = !credentialStore.load()?.teachingCloudPassword.isNullOrBlank()
+            if (configured) {
+                triggerManualAssignmentRefresh()
+            } else {
+                showConfigureUCloudDialog(PendingUCloudAction.MANUAL_REFRESH)
+            }
+        }
         assignmentUnbindBtn.setOnClickListener {
             val account = credentialStore.load()?.account.orEmpty()
             confirmClearUCloudPassword(account)
@@ -247,26 +285,17 @@ class MainActivity : Activity() {
         }
         assignmentToggleSwitch.setChecked(isAssignmentSwitchOn, animate = false)
         assignmentToggleSwitch.onCheckedChangeListener = { isChecked ->
-            if (isChecked) {
-                if (credentialStore.load()?.teachingCloudPassword.isNullOrBlank()) {
-                    assignmentToggleSwitch.setChecked(false, animate = false)
-                    showConfigureUCloudDialog(PendingUCloudAction.ENABLE_SWITCH)
-                } else {
-                    isAssignmentSwitchOn = true
-                    scheduleView.setShowAssignments(true)
-                }
+            if (isChecked && credentialStore.load()?.teachingCloudPassword.isNullOrBlank()) {
+                assignmentToggleSwitch.setChecked(false, animate = false)
+                showConfigureUCloudDialog(PendingUCloudAction.ENABLE_SWITCH)
             } else {
-                isAssignmentSwitchOn = false
-                scheduleView.setShowAssignments(false)
+                isAssignmentSwitchOn = isChecked
+                scheduleView.setShowAssignments(isChecked)
             }
         }
         assignmentSwitchContainer.setOnClickListener {
-            if (!isAssignmentSwitchOn) {
-                if (credentialStore.load()?.teachingCloudPassword.isNullOrBlank()) {
-                    showConfigureUCloudDialog(PendingUCloudAction.ENABLE_SWITCH)
-                } else {
-                    assignmentToggleSwitch.toggle(animate = true)
-                }
+            if (!isAssignmentSwitchOn && credentialStore.load()?.teachingCloudPassword.isNullOrBlank()) {
+                showConfigureUCloudDialog(PendingUCloudAction.ENABLE_SWITCH)
             } else {
                 assignmentToggleSwitch.toggle(animate = true)
             }
@@ -275,6 +304,7 @@ class MainActivity : Activity() {
         chipPending.setOnClickListener { filterAssignments(AssignmentStatus.PENDING) }
         chipOverdue.setOnClickListener { filterAssignments(AssignmentStatus.OVERDUE) }
         scheduleView.onAssignmentClickListener = { item -> showAssignmentDetailDialog(item.original) }
+        scheduleView.onOverflowClickListener = { overflowItems -> showOverflowAssignmentsDialog(overflowItems) }
 
         refreshButton.setOnClickListener { triggerManualRefresh() }
         weekBadge.setOnClickListener { showWeekPickerDialog() }
@@ -294,11 +324,13 @@ class MainActivity : Activity() {
         val credentials = credentialStore.load()?.takeIf {
             it.account.isNotBlank() && it.password.isNotEmpty()
         }
-        currentAssignments = assignmentRepository.loadCached(credentials?.account)
+        loadAccountAssignments(credentials?.account)
         when {
             cached != null -> {
                 val now = Calendar.getInstance(shanghai)
-                selectedWeek = ScheduleLogic.resolveSelectedWeek(null, cached, now)
+                selectedWeek = ScheduleLogic.resolveSelectedWeek(
+                    restoredWeek.takeIf { restoredTerm == cached.termID }, cached, now)
+                selectedWeek = dateState.selectedWeek(cached, selectedWeek, now)
                 currentSnapshot = cached
                 val lastRefresh = refreshMetadataStore.getLastSuccessfulRefreshTime()
                 val initialRefreshText = if (lastRefresh != null) {
@@ -352,6 +384,11 @@ class MainActivity : Activity() {
         if (previousAccount != null && previousAccount != account) {
             assignmentRepository.clearSession()
             currentAssignments = emptyList()
+            cloudAssignments = emptyList()
+            customAssignments = emptyList()
+            currentSnapshot = null
+            positionedWeekKey = null
+            dateState.followsCurrentWeek = true
             assignmentSyncState = AssignmentSyncState.IDLE
             isAssignmentSwitchOn = false
             assignmentToggleSwitch.setChecked(false, animate = false)
@@ -368,8 +405,7 @@ class MainActivity : Activity() {
             hadCache = false,
             credentialSaveMode = CredentialSaveMode.SAVE_AFTER_REFRESH_SUCCESS,
             onSuccess = { snapshot ->
-                currentAssignments = assignmentRepository.loadCached(account)
-                updateAssignmentUiState()
+                loadAccountAssignments(account)
                 if (!teachingPassword.isNullOrBlank()) {
                     assignmentWorker.execute {
                         val result = runCatching {
@@ -477,6 +513,7 @@ class MainActivity : Activity() {
                             newSnapshot = snapshot,
                             now = now,
                         )
+                        selectedWeek = dateState.selectedWeek(snapshot, selectedWeek, now)
                         currentSnapshot = snapshot
                         renderSchedule(snapshot, selectedWeek, "\u5df2\u66f4\u65b0")
                     } else {
@@ -485,6 +522,7 @@ class MainActivity : Activity() {
                         scheduleStatus.setOnClickListener(null)
                         refreshLabel.text = "\u5df2\u662f\u6700\u65b0"
                     }
+                    updateClock(force = true)
                     scheduleRevertRefreshStatus(delayMs = 1800L)
                 }.onFailure { error ->
                     setLoginLoading(false)
@@ -509,13 +547,15 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun renderSchedule(snapshot: ScheduleSnapshot, week: Int, refreshText: String?) {
-        loginPage.visibility = View.GONE
-        mainContainer.visibility = View.VISIBLE
-        schedulePage.visibility = if (currentTabIsSchedule) View.VISIBLE else View.GONE
-        assignmentPage.visibility = if (currentTabIsSchedule) View.GONE else View.VISIBLE
-        scheduleStatus.visibility = View.GONE
-        scheduleStatus.setOnClickListener(null)
+    private fun renderSchedule(snapshot: ScheduleSnapshot, week: Int, refreshText: String?, present: Boolean = true) {
+        if (present) {
+            loginPage.visibility = View.GONE
+            mainContainer.visibility = View.VISIBLE
+            schedulePage.visibility = if (currentTabIsSchedule) View.VISIBLE else View.GONE
+            assignmentPage.visibility = if (currentTabIsSchedule) View.GONE else View.VISIBLE
+            scheduleStatus.visibility = View.GONE
+            scheduleStatus.setOnClickListener(null)
+        }
         if (refreshText != null) {
             refreshLabel.text = refreshText
         }
@@ -536,6 +576,11 @@ class MainActivity : Activity() {
             dates.map { dateFormatter.format(it.time) },
             todayIndex,
         )
+        val weekKey = "${snapshot.termID}:${snapshot.termStartDate}:$week"
+        if (positionedWeekKey != weekKey) {
+            scheduleView.positionForToday(todayIndex, resetUser = true)
+            positionedWeekKey = weekKey
+        }
         semesterLabel.text = formatTerm(snapshot.termID)
         weekBadgeText.text = "\u7b2c $week \u5468"
         weekRange.text = "${rangeFormatter.format(dates.first().time)} \u2014 ${rangeFormatter.format(dates.last().time)}"
@@ -633,10 +678,17 @@ class MainActivity : Activity() {
         }
         dialog.findViewById<View>(R.id.dialog_confirm_button).setOnClickListener {
             val newWeek = picker.value
+            currentSnapshot?.let { dateState.select(it, newWeek, Calendar.getInstance(shanghai)) }
             if (newWeek != selectedWeek) {
                 selectedWeek = newWeek
                 currentSnapshot?.let { current ->
                     renderSchedule(current, selectedWeek, refreshText = null)
+                }
+            }
+            currentSnapshot?.let { current ->
+                if (newWeek == ScheduleLogic.currentWeek(current)) {
+                    val dates = ScheduleLogic.mondayOfWeek(current.termStartDate, newWeek)?.let(ScheduleLogic::daysOfWeek)
+                    scheduleView.positionForToday(dates?.let { ScheduleLogic.todayIndexInWeek(it) } ?: -1, resetUser = true)
                 }
             }
             dialog.dismiss()
@@ -662,6 +714,7 @@ class MainActivity : Activity() {
             dates.map { dateFormatter.format(it.time) },
             ((now.get(Calendar.DAY_OF_WEEK) + 5) % 7),
         )
+        scheduleView.positionForToday((now.get(Calendar.DAY_OF_WEEK) + 5) % 7, resetUser = true)
         semesterLabel.text = formatTerm(SemesterLogic.suggest(now).termID)
         weekBadgeText.text = "\u52a0\u8f7d\u4e2d"
         weekRange.text = "${rangeFormatter.format(dates.first().time)} \u2014 ${rangeFormatter.format(dates.last().time)}"
@@ -709,8 +762,7 @@ class MainActivity : Activity() {
         (error as? ScheduleException)?.message ?: "获取课表失败，请稍后重试。"
 
     private fun ucloudMessage(error: Throwable): String =
-        (error as? ScheduleException)?.message
-            ?: "云邮连接失败，请检查网络或密码后重试。"
+        AssignmentPresentation.ucloudMessage(error)
 
     private fun formatTerm(termID: String): String {
         val parts = termID.split('-')
@@ -819,8 +871,46 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        updateClock(force = true)
+        scheduleClockTick()
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_DATE_CHANGED)
+            addAction(Intent.ACTION_TIME_CHANGED)
+            addAction(Intent.ACTION_TIMEZONE_CHANGED)
+        }
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(clockReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        else registerReceiver(clockReceiver, filter)
+        clockReceiverRegistered = true
         startRefreshTicker()
         checkAutoRefreshOnForeground()
+    }
+
+    private fun scheduleClockTick() {
+        mainHandler.removeCallbacks(clockTick)
+        mainHandler.postDelayed(clockTick, ScheduleDateState.nextMinuteDelay(Calendar.getInstance(shanghai)))
+    }
+
+    private fun updateClock(force: Boolean = false) {
+        val now = Calendar.getInstance(shanghai)
+        val changedDate = dateState.dateChanged(now)
+        currentSnapshot?.let { snapshot ->
+            val previousWeek = selectedWeek
+            selectedWeek = dateState.selectedWeek(snapshot, selectedWeek, now)
+            if (changedDate || force || previousWeek != selectedWeek) {
+                renderSchedule(snapshot, selectedWeek, refreshText = null, present = false)
+                val monday = ScheduleLogic.mondayOfWeek(snapshot.termStartDate, selectedWeek)
+                val today = monday?.let { ScheduleLogic.todayIndexInWeek(ScheduleLogic.daysOfWeek(it), now) } ?: -1
+                scheduleView.positionForToday(today)
+            } else refreshAssignments(snapshot.courses, selectedWeek)
+        } ?: updateAssignmentUiState()
+        refreshVisibleDetail?.invoke()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putInt("selected_week", selectedWeek)
+        outState.putString("selected_term", currentSnapshot?.termID)
+        outState.putBoolean("follows_current_week", dateState.followsCurrentWeek)
+        super.onSaveInstanceState(outState)
     }
 
     private fun checkAutoRefreshOnForeground() {
@@ -848,6 +938,13 @@ class MainActivity : Activity() {
     }
 
     private fun selectTab(isSchedule: Boolean) {
+        if (isSchedule && !currentTabIsSchedule) {
+            updateClock(force = true)
+            currentSnapshot?.let { snapshot ->
+                val dates = ScheduleLogic.mondayOfWeek(snapshot.termStartDate, selectedWeek)?.let(ScheduleLogic::daysOfWeek)
+                scheduleView.positionForToday(dates?.let { ScheduleLogic.todayIndexInWeek(it) } ?: -1, resetUser = true)
+            }
+        }
         currentTabIsSchedule = isSchedule
         schedulePage.visibility = if (isSchedule) View.VISIBLE else View.GONE
         assignmentPage.visibility = if (isSchedule) View.GONE else View.VISIBLE
@@ -875,6 +972,7 @@ class MainActivity : Activity() {
     }
 
     private fun refreshAssignments(courses: List<Course>, week: Int) {
+        rebuildAssignments()
         val weekAssignments = currentAssignments
             .filter { it.week == week && !it.status.isFinished }
             .map { a ->
@@ -893,6 +991,42 @@ class MainActivity : Activity() {
             }
         scheduleView.setAssignmentRecords(weekAssignments)
         updateAssignmentUiState()
+    }
+
+    private fun rebuildAssignments() {
+        currentAssignments = AssignmentPresentation.merge(cloudAssignments, customAssignments,
+            currentSnapshot?.termStartDate, Calendar.getInstance(shanghai))
+    }
+
+    private fun loadAccountAssignments(account: String?) {
+        cloudAssignments = assignmentRepository.loadCached(account)
+        customAssignments = if (account.isNullOrBlank()) emptyList() else runCatching {
+            customAssignmentStore.load(account)
+        }.getOrElse {
+            Toast.makeText(this, "本地作业读取失败，原文件已保留，请勿清除应用数据", Toast.LENGTH_LONG).show()
+            emptyList()
+        }
+        currentSnapshot?.let { refreshAssignments(it.courses, selectedWeek) } ?: updateAssignmentUiState()
+    }
+
+    private fun showCustomAssignmentEditor(task: CustomAssignment? = null) {
+        val account = credentialStore.load()?.account ?: return
+        CustomAssignmentEditor.show(this, task, currentSnapshot?.courses?.map { it.name }.orEmpty()) { updated ->
+            check(credentialStore.load()?.account == account)
+            customAssignmentStore.upsert(account, updated)
+            loadAccountAssignments(account)
+        }
+    }
+
+    private fun changeCustomAssignment(account: String, operation: () -> Unit): Boolean {
+        if (credentialStore.load()?.account != account) return false
+        return runCatching {
+            operation()
+            loadAccountAssignments(account)
+        }.fold(onSuccess = { true }, onFailure = {
+            Toast.makeText(this, "保存失败，原有作业数据已保留，请重试", Toast.LENGTH_LONG).show()
+            false
+        })
     }
 
     private fun triggerRetryIfFailed() {
@@ -979,8 +1113,7 @@ class MainActivity : Activity() {
 
     private fun openAssignmentTab(credentials: Credentials) {
         if (!currentTabIsSchedule) return
-        currentAssignments = assignmentRepository.loadCached(credentials.account)
-        updateAssignmentUiState()
+        loadAccountAssignments(credentials.account)
         selectTab(isSchedule = false)
         triggerAssignmentRefresh(credentials, currentSnapshot?.termStartDate)
     }
@@ -1021,22 +1154,15 @@ class MainActivity : Activity() {
     }
 
     private fun updateAssignmentUiState() {
+        rebuildAssignments()
         assignmentStatsBadge.text = "共 ${currentAssignments.size} 项"
         val configured = !credentialStore.load()?.teachingCloudPassword.isNullOrBlank()
-        val failed = assignmentSyncState == AssignmentSyncState.FAILED_WITH_CACHE ||
-            assignmentSyncState == AssignmentSyncState.FAILED_NO_CACHE
-        assignmentReauthBtn.visibility = if (configured && !failed) View.GONE else View.VISIBLE
-        assignmentReauthBtn.text = if (configured) "重新验证云邮密码" else "配置云邮"
+        val failed = AssignmentPresentation.isFailed(assignmentSyncState)
+        assignmentReauthBtn.visibility = if (AssignmentPresentation.isActionButtonVisible(configured, assignmentSyncState)) View.VISIBLE else View.GONE
+        assignmentReauthBtn.text = AssignmentPresentation.actionButtonText(configured)
         assignmentUnbindBtn.visibility = if (configured) View.VISIBLE else View.GONE
         assignmentUnbindBtn.text = "清除云邮密码"
-        assignmentCloudStatus.text = when {
-            !configured -> "云邮未配置"
-            assignmentSyncState == AssignmentSyncState.LOADING -> "正在更新任务…"
-            assignmentSyncState == AssignmentSyncState.SUCCESS -> "更新完成"
-            assignmentSyncState == AssignmentSyncState.FAILED_WITH_CACHE ||
-                assignmentSyncState == AssignmentSyncState.FAILED_NO_CACHE -> "同步失败"
-            else -> "云邮已配置"
-        }
+        assignmentCloudStatus.text = AssignmentPresentation.cloudStatusText(configured, assignmentSyncState)
         assignmentCloudStatus.setTextColor(Color.parseColor(if (failed) "#BD5267" else "#8E9AA8"))
         renderAssignmentList()
     }
@@ -1048,7 +1174,7 @@ class MainActivity : Activity() {
         startAssignmentRefreshAnimation()
         updateAssignmentUiState()
         assignmentWorker.execute {
-            val result = runCatching { assignmentRepository.refresh(credentials, termStartDate) }
+            val result = runCatching { assignmentRepository.refreshWithCoverage(credentials, termStartDate) }
             mainHandler.post {
                 assignmentRefreshInFlight.end()
                 stopAssignmentRefreshAnimation()
@@ -1061,13 +1187,13 @@ class MainActivity : Activity() {
                     }
                     return@post
                 }
-                result.onSuccess { assignments ->
-                    currentAssignments = assignments
-                    assignmentSyncState = AssignmentSyncState.SUCCESS
+                result.onSuccess { refresh ->
+                    cloudAssignments = refresh.assignments
+                    assignmentSyncState = if (refresh.complete) AssignmentSyncState.SUCCESS else AssignmentSyncState.PARTIAL
                 }.onFailure { error ->
-                    assignmentSyncState = if (currentAssignments.isEmpty())
+                    assignmentSyncState = if (cloudAssignments.isEmpty())
                         AssignmentSyncState.FAILED_NO_CACHE else AssignmentSyncState.FAILED_WITH_CACHE
-                    Toast.makeText(this@MainActivity, "同步失败：${ucloudMessage(error)}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, AssignmentPresentation.syncFailureToast(error), Toast.LENGTH_SHORT).show()
                 }
                 currentSnapshot?.let { refreshAssignments(it.courses, selectedWeek) } ?: updateAssignmentUiState()
             }
@@ -1090,39 +1216,22 @@ class MainActivity : Activity() {
     }
 
     private fun renderAssignmentList() {
+        val filtered = AssignmentPresentation.filter(currentAssignments, selectedAssignmentFilter)
+        if (filtered.isNotEmpty() && filtered == lastRenderedAssignments) return
+        lastRenderedAssignments = filtered
         assignmentListContainer.removeAllViews()
-        val filtered = if (selectedAssignmentFilter == null) {
-            currentAssignments
-        } else {
-            currentAssignments.filter { it.status == selectedAssignmentFilter }
-        }
 
         if (filtered.isEmpty()) {
             assignmentEmptyView.visibility = View.VISIBLE
             val configured = !credentialStore.load()?.teachingCloudPassword.isNullOrBlank()
-            assignmentEmptyAction.visibility = View.VISIBLE
-            when {
-                !configured -> {
-                    assignmentEmptyTitle.text = "云邮未配置"
-                    assignmentEmptySubtitle.text = "配置云邮密码后可读取未提交的作业和测验"
-                    assignmentEmptyAction.text = "配置云邮"
-                }
-                assignmentSyncState == AssignmentSyncState.FAILED_NO_CACHE ||
-                    assignmentSyncState == AssignmentSyncState.FAILED_WITH_CACHE -> {
-                    assignmentEmptyTitle.text = "同步失败"
-                    assignmentEmptySubtitle.text = "请检查网络或云邮密码，点击重试"
-                    assignmentEmptyAction.text = "重试"
-                }
-                assignmentSyncState == AssignmentSyncState.LOADING -> {
-                    assignmentEmptyTitle.text = "正在更新任务…"
-                    assignmentEmptySubtitle.text = "请稍候"
-                    assignmentEmptyAction.visibility = View.GONE
-                }
-                else -> {
-                    assignmentEmptyTitle.text = "暂无任务"
-                    assignmentEmptySubtitle.text = "当前没有未提交的作业或测验"
-                    assignmentEmptyAction.visibility = View.GONE
-                }
+            assignmentEmptyTitle.text = AssignmentPresentation.emptyStateTitle(configured, assignmentSyncState)
+            assignmentEmptySubtitle.text = AssignmentPresentation.emptyStateSubtitle(configured, assignmentSyncState)
+            val actionText = AssignmentPresentation.emptyStateAction(configured, assignmentSyncState)
+            if (actionText != null) {
+                assignmentEmptyAction.visibility = View.VISIBLE
+                assignmentEmptyAction.text = actionText
+            } else {
+                assignmentEmptyAction.visibility = View.GONE
             }
             return
         }
@@ -1140,7 +1249,8 @@ class MainActivity : Activity() {
             val deadlineView = cardView.findViewById<TextView>(R.id.card_deadline_text)
             val remainingView = cardView.findViewById<TextView>(R.id.card_remaining_text)
 
-            courseNameView.text = if (assignment.taskType == TaskType.QUIZ) "测验 · ${assignment.courseName}" else assignment.courseName
+            courseNameView.text = assignmentCourseLabel(assignment)
+            cardView.findViewById<View>(R.id.card_custom_badge).visibility = if (assignment.isCustom) View.VISIBLE else View.GONE
             statusBadgeView.text = assignment.status.label
 
             when (assignment.status) {
@@ -1168,7 +1278,7 @@ class MainActivity : Activity() {
 
             titleView.text = assignment.title
             subtitleView.text = assignment.chapterName?.trim()?.takeIf(String::isNotEmpty)
-                ?: if (assignment.taskType == TaskType.QUIZ) "测验信息见详情" else "作业说明见详情"
+                ?: "${assignment.taskType.label}信息见详情"
             deadlineView.text = "${assignment.deadlineText} 截止"
             remainingView.text = if (assignment.remainingDaysText.isNotBlank()) " · ${assignment.remainingDaysText}" else ""
 
@@ -1180,7 +1290,40 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showAssignmentDetailDialog(assignment: Assignment) {
+    private fun showOverflowAssignmentsDialog(items: List<ScheduleAssignmentItem>) {
+        if (items.isEmpty()) return
+        val dayName = when (items.first().day) {
+            1 -> "\u5468\u4e00"
+            2 -> "\u5468\u4e8c"
+            3 -> "\u5468\u4e09"
+            4 -> "\u5468\u56db"
+            5 -> "\u5468\u4e94"
+            6 -> "\u5468\u516d"
+            7 -> "\u5468\u65e5"
+            else -> ""
+        }
+        val titles = items.map { "${it.deadlineTimeShort} \u00b7 ${it.courseName} - ${it.title}" }.toTypedArray()
+        android.app.AlertDialog.Builder(this)
+            .setTitle("${dayName}\u4f5c\u4e1a\u5217\u8868 (${items.size}\u9879)")
+            .setItems(titles) { _, which ->
+                if (which in items.indices) {
+                    showAssignmentDetailDialog(items[which].original)
+                }
+            }
+            .setPositiveButton("\u5173\u95ed", null)
+            .show()
+    }
+
+    private fun assignmentCourseLabel(assignment: Assignment): String =
+        if (assignment.taskType == TaskType.ASSIGNMENT) assignment.courseName
+        else "${assignment.taskType.label} · ${assignment.courseName}"
+
+    private fun showAssignmentDetailDialog(original: Assignment) {
+        rebuildAssignments()
+        val assignment = currentAssignments.firstOrNull {
+            it.sourceKey == original.sourceKey && it.isCustom == original.isCustom
+        } ?: return
+        val account = credentialStore.load()?.account ?: return
         val dialog = Dialog(this)
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
         dialog.setContentView(R.layout.dialog_assignment_detail)
@@ -1191,6 +1334,7 @@ class MainActivity : Activity() {
             window.setWindowAnimations(android.R.style.Animation_InputMethod)
         }
 
+        val customBadgeView = dialog.findViewById<TextView>(R.id.assignment_detail_custom_badge)
         val badgeView = dialog.findViewById<TextView>(R.id.assignment_detail_badge)
         val titleView = dialog.findViewById<TextView>(R.id.assignment_detail_title)
         val courseView = dialog.findViewById<TextView>(R.id.assignment_detail_course)
@@ -1201,11 +1345,12 @@ class MainActivity : Activity() {
         val scoreRow = dialog.findViewById<View>(R.id.assignment_detail_score_row)
         val scoreView = dialog.findViewById<TextView>(R.id.assignment_detail_score)
         val closeBtn = dialog.findViewById<View>(R.id.assignment_detail_close)
-        val confirmBtn = dialog.findViewById<View>(R.id.assignment_detail_confirm_button)
+        val confirmBtn = dialog.findViewById<Button>(R.id.assignment_detail_confirm_button)
 
+        customBadgeView.visibility = if (assignment.isCustom) View.VISIBLE else View.GONE
         badgeView.text = assignment.status.label
         titleView.text = assignment.title
-        courseView.text = if (assignment.taskType == TaskType.QUIZ) "测验 · ${assignment.courseName}" else assignment.courseName
+        courseView.text = assignmentCourseLabel(assignment)
         deadlineView.text = "${assignment.deadlineText} 截止"
         statusView.text = assignment.status.label
         if (assignment.remainingDaysText.isNotBlank()) {
@@ -1215,17 +1360,26 @@ class MainActivity : Activity() {
             remainingView.visibility = View.GONE
             remainingView.text = ""
         }
-        if (assignment.taskType == TaskType.QUIZ) {
+        if (assignment.isCustom) {
+            descView.text = assignment.description.ifBlank { "暂无作业说明" }
+        } else if (assignment.taskType == TaskType.QUIZ) {
             descView.text = "云课堂测验"
+        } else if (assignment.taskType == TaskType.SURVEY) {
+            descView.text = assignment.description.ifBlank { "请在云课堂对应课程的问卷页面查看。" }
         } else if (assignment.description.isNotBlank()) {
             descView.text = assignment.description
         } else {
             descView.text = "\u6b63\u5728\u52a0\u8f7d\u4f5c\u4e1a\u8bf4\u660e\u2026"
             assignmentWorker.execute {
-                val detail = runCatching { assignmentRepository.fetchDetail(assignment.id) { credentialStore.load() } }.getOrNull()
+                val detail = runCatching {
+                    assignmentRepository.fetchDetail(assignment.id) {
+                        credentialStore.load()?.takeIf { it.account == account }
+                    }
+                }.getOrNull()
                 mainHandler.post {
                     if (dialog.isShowing) {
                         descView.text = detail?.ifBlank { "\u6682\u65e0\u4f5c\u4e1a\u8bf4\u660e" } ?: "\u8be6\u60c5\u52a0\u8f7d\u5931\u8d25"
+                        dialog.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                     }
                 }
             }
@@ -1264,10 +1418,30 @@ class MainActivity : Activity() {
         closeBtn.setOnClickListener { dialog.dismiss() }
         confirmBtn.setOnClickListener { dialog.dismiss() }
 
+        val completeBtn = dialog.findViewById<Button>(R.id.assignment_detail_complete_button)
+        if (assignment.isCustom) {
+            val task = customAssignments.firstOrNull { it.id == assignment.id }
+            completeBtn.visibility = View.VISIBLE
+            completeBtn.setOnClickListener {
+                if (task != null && changeCustomAssignment(account) {
+                    customAssignmentStore.complete(account, task.id)
+                }) dialog.dismiss()
+            }
+        } else {
+            completeBtn.visibility = View.GONE
+        }
+
         dialog.show()
+        dialog.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT)
     }
 
     override fun onStop() {
+        mainHandler.removeCallbacks(clockTick)
+        if (clockReceiverRegistered) {
+            unregisterReceiver(clockReceiver)
+            clockReceiverRegistered = false
+        }
         stopRefreshTicker()
         super.onStop()
     }
@@ -1278,6 +1452,7 @@ class MainActivity : Activity() {
         mainHandler.removeCallbacksAndMessages(null)
         worker.shutdownNow()
         assignmentWorker.shutdownNow()
+        assignmentRepository.clearSession()
         super.onDestroy()
     }
 
@@ -1296,7 +1471,7 @@ class MainActivity : Activity() {
                         isAssignmentSwitchOn = false
                         assignmentToggleSwitch.setChecked(false, animate = false)
                         scheduleView.setShowAssignments(false)
-                        updateAssignmentUiState()
+                        loadAccountAssignments(account)
                     }.onFailure { error ->
                         Toast.makeText(this, userMessage(error), Toast.LENGTH_LONG).show()
                     }

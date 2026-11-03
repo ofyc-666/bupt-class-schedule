@@ -274,4 +274,112 @@ class UCloudAssignmentParserTest {
         assertTrue(!sanitized.contains("999"))
         assertTrue(sanitized.contains("[PROTECTED]"))
     }
+
+    @Test
+    fun testFormatDeadlineText_sameYear() {
+        val now = Calendar.getInstance(shanghai).apply {
+            set(2026, Calendar.OCTOBER, 15, 10, 0, 0)
+        }
+        val deadlineNormal = Calendar.getInstance(shanghai).apply {
+            set(2026, Calendar.OCTOBER, 16, 23, 59, 0)
+        }
+        assertEquals("10月16日 23:59", UCloudAssignmentParser.formatDeadlineText(deadlineNormal, now))
+
+        val deadlineSingleDigit = Calendar.getInstance(shanghai).apply {
+            set(2026, Calendar.MAY, 3, 8, 5, 0)
+        }
+        assertEquals("5月3日 08:05", UCloudAssignmentParser.formatDeadlineText(deadlineSingleDigit, now))
+
+        val deadlineSameDay = Calendar.getInstance(shanghai).apply {
+            set(2026, Calendar.OCTOBER, 15, 23, 59, 0)
+        }
+        assertEquals("10月15日 23:59", UCloudAssignmentParser.formatDeadlineText(deadlineSameDay, now))
+
+        val deadlineNextDay = Calendar.getInstance(shanghai).apply {
+            set(2026, Calendar.OCTOBER, 16, 12, 0, 0)
+        }
+        assertEquals("10月16日 12:00", UCloudAssignmentParser.formatDeadlineText(deadlineNextDay, now))
+    }
+
+    @Test
+    fun testFormatDeadlineText_differentYear() {
+        val now = Calendar.getInstance(shanghai).apply {
+            set(2026, Calendar.OCTOBER, 15, 10, 0, 0)
+        }
+        val deadlineNextYear = Calendar.getInstance(shanghai).apply {
+            set(2027, Calendar.JANUARY, 2, 23, 59, 0)
+        }
+        assertEquals("2027年1月2日 23:59", UCloudAssignmentParser.formatDeadlineText(deadlineNextYear, now))
+
+        val deadlinePastYear = Calendar.getInstance(shanghai).apply {
+            set(2025, Calendar.DECEMBER, 31, 23, 59, 0)
+        }
+        assertEquals("2025年12月31日 23:59", UCloudAssignmentParser.formatDeadlineText(deadlinePastYear, now))
+
+        val deadlineMultiYear = Calendar.getInstance(shanghai).apply {
+            set(2028, Calendar.SEPTEMBER, 1, 9, 30, 0)
+        }
+        assertEquals("2028年9月1日 09:30", UCloudAssignmentParser.formatDeadlineText(deadlineMultiYear, now))
+    }
+
+    @Test
+    fun testFormatDeadlineText_monthBoundaries() {
+        val nowSept30 = Calendar.getInstance(shanghai).apply {
+            set(2026, Calendar.SEPTEMBER, 30, 23, 0, 0)
+        }
+        val deadlineOct1 = Calendar.getInstance(shanghai).apply {
+            set(2026, Calendar.OCTOBER, 1, 0, 0, 0)
+        }
+        assertEquals("10月1日 00:00", UCloudAssignmentParser.formatDeadlineText(deadlineOct1, nowSept30))
+
+        val nowLeapFeb28 = Calendar.getInstance(shanghai).apply {
+            set(2028, Calendar.FEBRUARY, 28, 12, 0, 0)
+        }
+        val deadlineLeapFeb29 = Calendar.getInstance(shanghai).apply {
+            set(2028, Calendar.FEBRUARY, 29, 23, 59, 0)
+        }
+        assertEquals("2月29日 23:59", UCloudAssignmentParser.formatDeadlineText(deadlineLeapFeb29, nowLeapFeb28))
+
+        val nowYearEnd = Calendar.getInstance(shanghai).apply {
+            set(2026, Calendar.DECEMBER, 31, 23, 59, 0)
+        }
+        val deadlineNewYear = Calendar.getInstance(shanghai).apply {
+            set(2027, Calendar.JANUARY, 1, 0, 0, 0)
+        }
+        assertEquals("2027年1月1日 00:00", UCloudAssignmentParser.formatDeadlineText(deadlineNewYear, nowYearEnd))
+
+        val nowNewYear = Calendar.getInstance(shanghai).apply {
+            set(2027, Calendar.JANUARY, 1, 0, 0, 0)
+        }
+        val deadlineLastYearEnd = Calendar.getInstance(shanghai).apply {
+            set(2026, Calendar.DECEMBER, 31, 23, 59, 0)
+        }
+        assertEquals("2026年12月31日 23:59", UCloudAssignmentParser.formatDeadlineText(deadlineLastYearEnd, nowNewYear))
+    }
+
+    @Test
+    fun testFormatDeadlineText_aroundMidnight() {
+        val nowBeforeMidnight = Calendar.getInstance(shanghai).apply {
+            set(2026, Calendar.OCTOBER, 16, 23, 58, 0)
+        }
+        val deadline2359 = Calendar.getInstance(shanghai).apply {
+            set(2026, Calendar.OCTOBER, 16, 23, 59, 0)
+        }
+        assertEquals("10月16日 23:59", UCloudAssignmentParser.formatDeadlineText(deadline2359, nowBeforeMidnight))
+
+        val deadline0000 = Calendar.getInstance(shanghai).apply {
+            set(2026, Calendar.OCTOBER, 17, 0, 0, 0)
+        }
+        assertEquals("10月17日 00:00", UCloudAssignmentParser.formatDeadlineText(deadline0000, nowBeforeMidnight))
+
+        val nowAfterMidnight = Calendar.getInstance(shanghai).apply {
+            set(2026, Calendar.OCTOBER, 17, 0, 1, 0)
+        }
+        val deadline0001 = Calendar.getInstance(shanghai).apply {
+            set(2026, Calendar.OCTOBER, 17, 0, 1, 0)
+        }
+        assertEquals("10月17日 00:01", UCloudAssignmentParser.formatDeadlineText(deadline0001, nowAfterMidnight))
+
+        assertEquals("10月16日 23:59", UCloudAssignmentParser.formatDeadlineText(deadline2359, nowAfterMidnight))
+    }
 }

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="custom_assignment_title">自定义作业</string>
+    <string name="custom_assignment_local_hint">保存在本机，仅当前教务账号可见</string>
+    <string name="custom_assignment_name_label">作业名称 · 必填</string>
+    <string name="custom_assignment_name_hint">例如：第三章课后练习</string>
+    <string name="custom_assignment_course_label">所属课程 · 必填</string>
+    <string name="custom_assignment_course_hint">输入课程名</string>
+    <string name="custom_assignment_pick_course">从当前学期课表选择 ›</string>
+    <string name="custom_assignment_deadline_label">截止日期与时间 · 必填（北京时间）</string>
+    <string name="custom_assignment_pick_date">选择截止日期</string>
+    <string name="custom_assignment_pick_time">选择截止时间</string>
+    <string name="custom_assignment_description_label">作业说明 · 选填</string>
+    <string name="custom_assignment_description_hint">要求、提交方式或其他备注</string>
+    <string name="custom_assignment_cancel">取消</string>
+    <string name="custom_assignment_save">保存</string>
+    <string name="custom_assignment_add">自定义作业</string>
+    <string name="custom_assignment_tag">自定义</string>
+    <string name="custom_assignment_complete">已完成</string>
+    <string name="custom_assignment_edit">编辑</string>
+    <string name="custom_assignment_delete">删除</string>
+</resources>
